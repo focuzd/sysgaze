@@ -1,0 +1,31 @@
+We are building a scoped strace clone for a hackathon whose details are given @./context
+
+This is the scope I plan on building (you can modify this but first we will discuss the modifications)
+1. Attach and stop 
+2. Full syscall stream 
+3. Argument decoding 
+4. String/buffer args 
+5. Real strace-shaped output 
+6. Multi-process — follow fork/clone/execve children
+7. Signal correctness 
+8. Benchmark harness — reproducible workload + measurement methodology
+9. Perf pass 1 — reduce ptrace-call count per syscall stop
+10. Seccomp-bpf fast path 
+11. Multi-process scaling test 
+12. Structured output mode (JSON/NDJSON)
+13. Summary/stats mode (-c equivalent)
+14. Syscall-class filters + polish
+
+The majority of the core engine, covering the steps 1-9 mentioned above has already been built by me,
+you can access it at /home/focuzd/strace-clone, my implementation is not perfect and was built from 
+a learning standpoint, and since the hackathon requires all the code to be written during the build 
+phase which has already started today 11:30 am IST, I want you to rebuild the core layer from scratch.
+A better implementation than mine(which obviously has flaws) you can reference my engine, if you wish to.
+And then work on the steps 10-14.
+
+Rather than one shotting the project, we build it in stages, test if everything is working as expected and then
+move onto the subsequent stages.
+
+The build must follow the rules of the hackathon.
+
+If you have any doubts you must ask rather than just assuming things.
