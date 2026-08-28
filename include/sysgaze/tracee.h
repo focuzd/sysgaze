@@ -21,6 +21,8 @@ struct sg_tracee {
     enum sg_tracee_phase phase;
     int pending_signal;
     bool attached;
+    bool newborn;
+    bool in_ptrace_stop;
     bool options_installed;
     bool has_pending_syscall;
     bool has_interrupted_syscall;

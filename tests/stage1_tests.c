@@ -13,6 +13,7 @@
 #include "sysgaze/decoder.h"
 #include "sysgaze/filter.h"
 #include "sysgaze/syscall_catalog.h"
+#include "sysgaze/tracee_table.h"
 
 static unsigned int tests_run;
 static unsigned int tests_failed;
@@ -202,6 +203,45 @@ static bool test_decoder_argv(void)
         "execve(\"one\", [\"one\", \"two\"], NULL) = -1 ENOENT "
         "(No such file or directory)"));
     sg_decoder_release_event(&event);
+    return true;
+}
+
+static bool test_tracee_table_growth_and_deletion(void)
+{
+    struct sg_tracee_table table;
+    int tid;
+
+    sg_tracee_table_init(&table);
+    for (tid = 1; tid <= 100; ++tid) {
+        bool inserted = false;
+
+        CHECK(sg_tracee_table_insert(&table, (pid_t)tid, (pid_t)(tid / 4 + 1),
+                                     false, &inserted));
+        CHECK(inserted);
+        CHECK(sg_tracee_table_get(&table, (pid_t)tid) != NULL);
+    }
+    CHECK(table.count == 100U);
+    for (tid = 2; tid <= 100; tid += 2) {
+        struct sg_tracee removed;
+
+        CHECK(sg_tracee_table_remove(&table, (pid_t)tid, &removed));
+        CHECK(removed.tid == (pid_t)tid);
+        CHECK(sg_tracee_table_get(&table, (pid_t)tid) == NULL);
+    }
+    CHECK(table.count == 50U);
+    for (tid = 1; tid <= 99; tid += 2) {
+        CHECK(sg_tracee_table_get(&table, (pid_t)tid)->tid == (pid_t)tid);
+    }
+    for (tid = 102; tid <= 200; tid += 2) {
+        CHECK(sg_tracee_table_insert(&table, (pid_t)tid, (pid_t)tid, true,
+                                     NULL));
+    }
+    CHECK(table.count == 100U);
+    CHECK(sg_tracee_table_insert(&table, 1, 1, false, NULL));
+    CHECK(table.count == 100U);
+    CHECK(!sg_tracee_table_remove(&table, 999, NULL));
+    sg_tracee_table_destroy(&table);
+    CHECK(table.slots == NULL);
     return true;
 }
 
@@ -510,6 +550,7 @@ static void run_test(const char *name, bool (*test)(void))
 
 int main(void)
 {
+    run_test("tracee table", test_tracee_table_growth_and_deletion);
     run_test("decoder input snapshots", test_decoder_input_snapshot_and_escaping);
     run_test("decoder output buffers", test_decoder_output_buffer_and_zero_length);
     run_test("decoder flags and errno", test_decoder_strings_flags_and_errno);

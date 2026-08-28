@@ -11,13 +11,14 @@ PROGRAM := build/sysgaze
 TEST_PROGRAM := build/tests/stage1_tests
 
 CORE_SOURCES := src/buffer.c src/cli.c src/decoder.c src/filter.c \
-	src/syscall_catalog.c
+	src/syscall_catalog.c src/tracee_table.c
 TRACE_SOURCES := src/trace.c
 PROGRAM_SOURCES := src/main.c $(CORE_SOURCES) $(TRACE_SOURCES)
 TEST_SOURCES := tests/stage1_tests.c tests/interface_compile.c $(CORE_SOURCES)
 
 FIXTURE_SOURCES := tests/fixtures/exit_fixture.c tests/fixtures/signal_fixture.c \
-	tests/fixtures/restart_fixture.c tests/fixtures/decode_fixture.c
+	tests/fixtures/restart_fixture.c tests/fixtures/decode_fixture.c \
+	tests/fixtures/follow_fixture.c tests/fixtures/attach_fixture.c
 FIXTURES := $(FIXTURE_SOURCES:tests/fixtures/%.c=build/tests/fixtures/%)
 
 PROGRAM_OBJECTS := $(PROGRAM_SOURCES:%.c=build/obj/%.o)
@@ -46,6 +47,9 @@ build/obj/%.test.o: %.c
 build/tests/fixtures/%: tests/fixtures/%.c
 	@mkdir -p $(@D)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< -o $@
+
+build/tests/fixtures/follow_fixture build/tests/fixtures/attach_fixture: \
+	CFLAGS += -pthread
 
 test: $(TEST_PROGRAM) $(PROGRAM) $(FIXTURES)
 	./$(TEST_PROGRAM)
