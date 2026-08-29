@@ -1,0 +1,51 @@
+Sysgaze Stage 7 benchmark — 2026-08-29 UTC
+
+Host:
+  Linux 7.0.0-30-generic x86_64
+  Intel Core i3-1005G1, 2 cores / 4 logical CPUs
+  GCC 15.2.0
+  strace 6.19
+
+Method:
+  5 warmups, 30 measured iterations, output rendered to a temporary file.
+  Filtered mode: trace=getpid. Times are milliseconds. Overhead is relative
+  to the native median measured in the same workload block.
+
+workload mode                  median       min       max    cpu-ms  overhead     events ptrace-calls
+syscall  native                 0.847     0.739     1.083     0.778      1.00          0            -
+syscall  sysgaze               27.698    25.495    35.271    24.342     32.68       2030         8126
+syscall  sysgaze-filtered      26.767    25.190    34.826    23.401     31.58       2000         8126
+syscall  strace                32.045    29.277    39.125    28.961     37.81       2031            -
+syscall  strace-filtered       32.363    29.079    38.342    29.230     38.19       2000            -
+file     native                 1.228     1.181     1.490     1.159      1.00          0            -
+file     sysgaze               22.343    20.491    28.134    19.901     18.20       1430         5726
+file     sysgaze-filtered      17.626    16.389    22.839    15.215     14.36        200         5726
+file     strace                24.622    23.368    30.873    22.324     20.05       1431            -
+file     strace-filtered       19.258    18.350    24.712    17.007     15.69        200            -
+process  native                 0.963     0.917     1.162     1.517      1.00          0            -
+process  sysgaze                9.893     9.402    12.219    13.818     10.27        878         3602
+process  sysgaze-filtered       9.358     8.967     9.858    13.293      9.72        800         3602
+process  strace                 9.665     9.136    10.182    14.253     10.03        894            -
+process  strace-filtered        9.107     8.702     9.703    13.744      9.45        800            -
+thread   native                 0.685     0.646     0.788     0.942      1.00          0            -
+thread   sysgaze               10.054     9.626    10.498    13.392     14.68        919         3722
+thread   sysgaze-filtered       9.399     8.886     9.974    12.739     13.73        800         3722
+thread   strace                 9.892     9.571    10.231    13.792     14.45        935            -
+thread   strace-filtered        9.308     8.861     9.667    13.273     13.59        800            -
+
+Before/after optimization (median wall milliseconds):
+  workload   Stage 6 full -> Stage 7 full    Stage 6 filtered -> Stage 7 filtered
+  syscall       29.048 -> 27.698 (-4.6%)         27.699 -> 26.767 (-3.4%)
+  file          21.995 -> 22.343 (+1.6%)         18.598 -> 17.626 (-5.2%)
+  process        9.846 ->  9.893 (+0.5%)          9.336 ->  9.358 (+0.2%)
+  thread         9.930 -> 10.054 (+1.2%)          9.407 ->  9.399 (-0.1%)
+
+The small fanout differences are within run-to-run noise. The targeted win is
+filtered execution, where unselected calls no longer perform timestamps or
+argument processing. Filtering does not reduce ptrace calls in ordinary
+PTRACE_SYSCALL mode: each current full/filtered pair has the same count. The
+Stage 8 seccomp-BPF mode is required to reduce stop traffic.
+
+Unfiltered strace event totals include non-returning syscall entry records;
+Sysgaze telemetry counts completed syscall events. Exact filtered getpid totals
+matched for all 240 measured filtered samples and are the normalization gate.

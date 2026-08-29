@@ -11,6 +11,8 @@ comma := ,
 PROGRAM := build/sysgaze
 TEST_PROGRAM := build/tests/stage1_tests
 NDJSON_VALIDATOR := build/tests/ndjson_validator
+BENCH_HARNESS := build/bench/harness
+BENCH_WORKLOAD := build/bench/workload
 
 CORE_SOURCES := src/buffer.c src/cli.c src/decoder.c src/filter.c src/output.c \
 	src/stats.c src/syscall_catalog.c src/tracee_table.c
@@ -30,7 +32,7 @@ FIXTURES := $(FIXTURE_SOURCES:tests/fixtures/%.c=build/tests/fixtures/%)
 PROGRAM_OBJECTS := $(PROGRAM_SOURCES:%.c=build/obj/%.o)
 TEST_OBJECTS := $(TEST_SOURCES:%.c=build/obj/%.test.o)
 
-.PHONY: all test check update-syscalls clean
+.PHONY: all test check bench bench-compare bench-smoke update-syscalls clean
 
 all: $(PROGRAM)
 
@@ -45,6 +47,14 @@ $(TEST_PROGRAM): $(TEST_OBJECTS)
 $(NDJSON_VALIDATOR): tests/ndjson_validator.c
 	@mkdir -p $(@D)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< -o $@
+
+$(BENCH_HARNESS): benchmarks/harness.c
+	@mkdir -p $(@D)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< -o $@
+
+$(BENCH_WORKLOAD): benchmarks/workload.c
+	@mkdir -p $(@D)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< -pthread -o $@
 
 build/obj/%.o: %.c
 	@mkdir -p $(@D)
@@ -85,6 +95,17 @@ check: clean
 	ASAN_OPTIONS=detect_leaks=0 $(MAKE) \
 		CFLAGS="$(CFLAGS) -O1 -fsanitize=address,undefined -fno-omit-frame-pointer" \
 		LDFLAGS="-fsanitize=address,undefined" test
+
+bench: $(PROGRAM) $(BENCH_HARNESS) $(BENCH_WORKLOAD)
+	./$(BENCH_HARNESS) ./$(PROGRAM) ./$(BENCH_WORKLOAD)
+
+bench-compare: $(PROGRAM) $(BENCH_HARNESS) $(BENCH_WORKLOAD)
+	@command -v strace >/dev/null || { echo "strace is not installed" >&2; exit 1; }
+	./$(BENCH_HARNESS) ./$(PROGRAM) ./$(BENCH_WORKLOAD) "$$(command -v strace)"
+
+bench-smoke: $(PROGRAM) $(BENCH_HARNESS) $(BENCH_WORKLOAD)
+	SYSGAZE_BENCH_WARMUPS=1 SYSGAZE_BENCH_ITERATIONS=1 \
+		./$(BENCH_HARNESS) ./$(PROGRAM) ./$(BENCH_WORKLOAD) >/dev/null
 
 update-syscalls:
 	./tools/update-syscall-names.sh

@@ -4,6 +4,7 @@
 #include <elf.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <limits.h>
 #include <linux/audit.h>
 #include <signal.h>
@@ -48,9 +49,48 @@ struct trace_context {
     int root_status;
     bool root_status_known;
     bool show_tids;
+    uint64_t event_count;
 };
 
 static volatile sig_atomic_t shutdown_signal;
+static uint64_t ptrace_call_count;
+
+static void set_error(char *error, size_t error_size, const char *format, ...);
+
+static long measured_ptrace(enum __ptrace_request request, pid_t pid,
+                            void *address, void *data)
+{
+    ++ptrace_call_count;
+    return ptrace(request, pid, address, data);
+}
+
+static bool write_benchmark_metrics(const struct trace_context *context,
+                                    char *error, size_t error_size)
+{
+    const char *text = getenv("SYSGAZE_BENCHMARK_FD");
+    char *end = NULL;
+    long descriptor;
+
+    if (text == NULL || *text == '\0') {
+        return true;
+    }
+    errno = 0;
+    descriptor = strtol(text, &end, 10);
+    if (errno != 0 || end == text || *end != '\0' || descriptor < 0 ||
+        descriptor > INT_MAX) {
+        set_error(error, error_size,
+                  "invalid internal benchmark descriptor");
+        return false;
+    }
+    if (dprintf((int)descriptor,
+                "events=%" PRIu64 " ptrace_calls=%" PRIu64 "\n",
+                context->event_count, ptrace_call_count) < 0) {
+        set_error(error, error_size, "cannot write benchmark metrics: %s",
+                  strerror(errno));
+        return false;
+    }
+    return true;
+}
 
 static void set_error(char *error, size_t error_size, const char *format, ...)
 {
@@ -183,8 +223,8 @@ static bool install_ptrace_options(pid_t child,
 {
     unsigned long options = ptrace_options(config, true);
 
-    if (ptrace(PTRACE_SETOPTIONS, child, NULL,
-               (void *)(uintptr_t)options) < 0) {
+    if (measured_ptrace(PTRACE_SETOPTIONS, child, NULL,
+                        (void *)(uintptr_t)options) < 0) {
         set_error(error, error_size, "PTRACE_SETOPTIONS failed: %s",
                   strerror(errno));
         return false;
@@ -195,8 +235,8 @@ static bool install_ptrace_options(pid_t child,
 static bool resume_tracee(pid_t tid, int signal_number,
                           char *error, size_t error_size)
 {
-    if (ptrace(PTRACE_SYSCALL, tid, NULL,
-               (void *)(uintptr_t)(unsigned int)signal_number) < 0) {
+    if (measured_ptrace(PTRACE_SYSCALL, tid, NULL,
+                        (void *)(uintptr_t)(unsigned int)signal_number) < 0) {
         set_error(error, error_size, "PTRACE_SYSCALL for %ld failed: %s",
                   (long)tid, strerror(errno));
         return false;
@@ -206,7 +246,7 @@ static bool resume_tracee(pid_t tid, int signal_number,
 
 static bool listen_tracee(pid_t tid, char *error, size_t error_size)
 {
-    if (ptrace(PTRACE_LISTEN, tid, NULL, NULL) < 0) {
+    if (measured_ptrace(PTRACE_LISTEN, tid, NULL, NULL) < 0) {
         set_error(error, error_size, "PTRACE_LISTEN for %ld failed: %s",
                   (long)tid, strerror(errno));
         return false;
@@ -335,6 +375,7 @@ static bool write_syscall(struct trace_context *context,
     if (!selected(context, event->number)) {
         return true;
     }
+    ++context->event_count;
     if (context->config->summary) {
         if (!sg_stats_record(&context->stats, event)) {
             set_error(error, error_size,
@@ -490,7 +531,8 @@ static bool begin_syscall(struct trace_context *context,
     for (index = 0U; index < 6U; ++index) {
         event.arguments[index] = info->entry.args[index];
     }
-    if (clock_gettime(CLOCK_MONOTONIC, &event.entered_at) < 0) {
+    if (selected(context, event.number) &&
+        clock_gettime(CLOCK_MONOTONIC, &event.entered_at) < 0) {
         set_error(error, error_size, "clock_gettime failed: %s",
                   strerror(errno));
         return false;
@@ -543,7 +585,8 @@ static bool finish_syscall(struct trace_context *context,
                                   result >= -INT_MAX
                               ? (int)-result
                               : 0;
-    if (clock_gettime(CLOCK_MONOTONIC, &event->exited_at) < 0) {
+    if (selected(context, event->number) &&
+        clock_gettime(CLOCK_MONOTONIC, &event->exited_at) < 0) {
         set_error(error, error_size, "clock_gettime failed: %s",
                   strerror(errno));
         return false;
@@ -577,8 +620,8 @@ static bool handle_syscall_stop(struct trace_context *context,
     struct ptrace_syscall_info info = {0};
     long result;
 
-    result = ptrace(PTRACE_GET_SYSCALL_INFO, tracee->tid,
-                    (void *)(uintptr_t)sizeof(info), &info);
+    result = measured_ptrace(PTRACE_GET_SYSCALL_INFO, tracee->tid,
+                             (void *)(uintptr_t)sizeof(info), &info);
     if (result < 0) {
         set_error(error, error_size, "PTRACE_GET_SYSCALL_INFO failed: %s",
                   strerror(errno));
@@ -829,8 +872,8 @@ static bool prepare_attach(struct trace_context *context,
                 free(ids);
                 return false;
             }
-            if (ptrace(PTRACE_SEIZE, ids[index], NULL,
-                       (void *)(uintptr_t)options) < 0) {
+            if (measured_ptrace(PTRACE_SEIZE, ids[index], NULL,
+                                (void *)(uintptr_t)options) < 0) {
                 int saved_errno = errno;
                 pid_t failed_tid = ids[index];
 
@@ -868,7 +911,7 @@ static bool prepare_attach(struct trace_context *context,
             return false;
         }
         for (index = 0U; index < count; ++index) {
-            if (ptrace(PTRACE_INTERRUPT, ids[index], NULL, NULL) < 0 &&
+            if (measured_ptrace(PTRACE_INTERRUPT, ids[index], NULL, NULL) < 0 &&
                 errno != ESRCH) {
                 int saved_errno = errno;
                 pid_t failed_tid = ids[index];
@@ -940,7 +983,7 @@ static bool handle_ptrace_event(struct trace_context *context,
         set_error(error, error_size, "unexpected ptrace event %u", event);
         return false;
     }
-    if (ptrace(PTRACE_GETEVENTMSG, tracee->tid, NULL, &message) < 0 ||
+    if (measured_ptrace(PTRACE_GETEVENTMSG, tracee->tid, NULL, &message) < 0 ||
         message == 0UL || message > (unsigned long)INT_MAX) {
         set_error(error, error_size, "cannot read child TID for %ld: %s",
                   (long)tracee->tid, strerror(errno));
@@ -958,7 +1001,7 @@ static bool handle_ptrace_event(struct trace_context *context,
         if (!add_tracee(context, child, tgid, attached, true,
                         error, error_size)) {
             if (attached) {
-                (void)ptrace(PTRACE_DETACH, child, NULL, NULL);
+                (void)measured_ptrace(PTRACE_DETACH, child, NULL, NULL);
             } else {
                 (void)kill(child, SIGKILL);
             }
@@ -1113,7 +1156,7 @@ static void interrupt_running_tracees(struct trace_context *context)
         }
         tracee = &context->tracees.slots[index].tracee;
         if (!tracee->in_ptrace_stop &&
-            ptrace(PTRACE_INTERRUPT, tracee->tid, NULL, NULL) < 0 &&
+            measured_ptrace(PTRACE_INTERRUPT, tracee->tid, NULL, NULL) < 0 &&
             errno == ESRCH) {
             tracee->phase = SG_TRACEE_GONE;
         }
@@ -1161,8 +1204,8 @@ static void detach_all_tracees(struct trace_context *context)
         } else {
             signal_number = tracee->pending_signal;
         }
-        (void)ptrace(PTRACE_DETACH, tracee->tid, NULL,
-                     (void *)(uintptr_t)(unsigned int)signal_number);
+        (void)measured_ptrace(PTRACE_DETACH, tracee->tid, NULL,
+                              (void *)(uintptr_t)(unsigned int)signal_number);
     }
 }
 
@@ -1203,7 +1246,7 @@ static bool trace_loop(struct trace_context *context, int *command_status,
         if (WIFSTOPPED(status) && ptrace_event == PTRACE_EVENT_EXEC) {
             unsigned long former = 0UL;
 
-            if (ptrace(PTRACE_GETEVENTMSG, waited, NULL, &former) < 0) {
+            if (measured_ptrace(PTRACE_GETEVENTMSG, waited, NULL, &former) < 0) {
                 set_error(error, error_size,
                           "cannot read former exec TID for %ld: %s",
                           (long)waited, strerror(errno));
@@ -1286,7 +1329,8 @@ static bool trace_loop(struct trace_context *context, int *command_status,
             } else {
                 siginfo_t signal_info = {0};
 
-                if (ptrace(PTRACE_GETSIGINFO, waited, NULL, &signal_info) < 0) {
+                if (measured_ptrace(PTRACE_GETSIGINFO, waited, NULL,
+                                    &signal_info) < 0) {
                     if (errno == EINVAL && is_stopping_signal(stop)) {
                         tracee->phase = SG_TRACEE_GROUP_STOPPED;
                         listen = tracee->attached;
@@ -1353,6 +1397,7 @@ bool sg_trace_run(const struct sg_config *config, int *command_status,
     if (!validate_runtime_options(config, error, error_size)) {
         return false;
     }
+    ptrace_call_count = 0U;
     context.config = config;
     context.decoder.string_limit = config->string_limit;
     context.decoder.memory.read = read_tracee_memory;
@@ -1425,6 +1470,9 @@ bool sg_trace_run(const struct sg_config *config, int *command_status,
     }
     if (success) {
         success = sg_output_finish(&context.output, error, error_size);
+    }
+    if (success) {
+        success = write_benchmark_metrics(&context, error, error_size);
     }
     sg_output_destroy(&context.output);
     sg_stats_destroy(&context.stats);

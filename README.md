@@ -30,6 +30,32 @@ task. Text is the default summary format; `--format=json` emits the finite
 `sysgaze.summary/v1` document. Summary rows are ordered by elapsed time with a
 stable syscall-name and number tie-break.
 
+## Benchmarks
+
+`make bench` runs the native C benchmark harness against four reproducible
+workloads: syscall-heavy, file I/O, process fanout, and thread fanout. Each row
+uses five warmups and thirty measured iterations and reports median/minimum/
+maximum wall time, median CPU time, overhead relative to native execution,
+completed selected syscall events, and tracer-side ptrace calls.
+
+```sh
+make bench
+make bench-compare   # also run matched unfiltered/filtered system strace modes
+```
+
+The filtered case selects `getpid`, whose expected count is checked on every
+measured run. This makes the output-normalization gate independent of dynamic
+loader and thread-scheduling noise. Ordinary ptrace filtering still stops on
+every syscall; it saves decoding and output work, but does not reduce ptrace
+traffic. Stage 8's opt-in seccomp-BPF path is intended to change that.
+
+The harness is itself C and uses `fork`, `execve`, `wait4`,
+`clock_gettime(CLOCK_MONOTONIC)`, and `getrusage`. It does not invoke shell
+timing or text-processing utilities. Set `SYSGAZE_BENCH_WARMUPS` and
+`SYSGAZE_BENCH_ITERATIONS` only when a shorter diagnostic run is needed; the
+published default remains 5/30. See [benchmarks/README.md](benchmarks/README.md)
+for metric definitions and interpretation.
+
 ## Shutdown behavior
 
 When interrupted with `SIGINT` or `SIGTERM`, Sysgaze detaches processes opened
