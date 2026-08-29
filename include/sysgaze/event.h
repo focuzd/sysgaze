@@ -34,6 +34,7 @@ struct sg_signal_event {
 struct sg_lifecycle_event {
     pid_t related_tid;
     int status;
+    unsigned int ptrace_event;
     bool signaled;
 };
 
@@ -41,6 +42,7 @@ struct sg_event {
     enum sg_event_kind kind;
     pid_t tid;
     pid_t tgid;
+    struct timespec observed_at;
     union {
         struct sg_syscall_event syscall;
         struct sg_signal_event signal;

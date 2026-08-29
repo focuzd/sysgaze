@@ -3,6 +3,7 @@ set -eu
 
 program=$1
 fixtures=$2
+validator=$3
 temporary_directory=$(mktemp -d)
 target_pid=
 tracer_pid=
@@ -36,12 +37,13 @@ set +e
 status=$?
 set -e
 test "$status" -eq 143
-grep -q '^--- signal 15 ' "$temporary_directory/signal.trace"
-grep -q '^+++ killed by signal 15 ' "$temporary_directory/signal.trace"
+grep -q '^--- SIGTERM ' "$temporary_directory/signal.trace"
+grep -q '^+++ killed by SIGTERM ' "$temporary_directory/signal.trace"
 
 "$program" -e trace=read -- "$fixtures/restart_fixture" >"$temporary_directory/restart.out" 2>"$temporary_directory/restart.trace"
 test ! -s "$temporary_directory/restart.out"
-grep -Eq '^read\(.*\) = 1$' "$temporary_directory/restart.trace"
+grep -Eq '^(read\(.*\)|<\.\.\. read resumed>\)) = 1$' \
+    "$temporary_directory/restart.trace"
 if grep -Eq 'errno\((512|513|514|516)\)' "$temporary_directory/restart.trace"; then
     echo "restart pseudo-error leaked into trace output" >&2
     exit 1
@@ -80,6 +82,76 @@ grep -q '^uname({sysname=' "$temporary_directory/decode.trace"
 grep -q '^write(-1, 0x1, 4) = -1 EBADF ' "$temporary_directory/decode.trace"
 
 set +e
+"$program" -e trace=rt_sigaction,rt_sigprocmask,tgkill,wait4 -- \
+    "$fixtures/signal_state_fixture" \
+    >"$temporary_directory/signal-state.out" \
+    2>"$temporary_directory/signal-state.trace"
+status=$?
+set -e
+test "$status" -eq 143
+test "$(grep -c '^--- SIGUSR1 ' "$temporary_directory/signal-state.trace")" -eq 1
+test "$(grep -c '^--- SIGUSR2 ' "$temporary_directory/signal-state.trace")" -eq 1
+test "$(grep -c '^--- SIGSTOP ' "$temporary_directory/signal-state.trace")" -eq 1
+test "$(grep -c '^--- SIGCONT ' "$temporary_directory/signal-state.trace")" -eq 1
+test "$(grep -c '^--- SIGTERM ' "$temporary_directory/signal-state.trace")" -eq 1
+test "$(grep -c '^--- SIGTRAP ' "$temporary_directory/signal-state.trace")" -eq 1
+if grep -q '^--- SIGTRAP .*si_addr' "$temporary_directory/signal-state.trace"; then
+    echo "user-generated SIGTRAP rendered with a fault address" >&2
+    exit 1
+fi
+grep -q '^wait4(.* <unfinished \.\.\.>$' \
+    "$temporary_directory/signal-state.trace"
+grep -q '^<\.\.\. wait4 resumed>) = ' \
+    "$temporary_directory/signal-state.trace"
+
+"$program" -f -e trace=read,getpid,write -- \
+    "$fixtures/interleave_fixture" \
+    >"$temporary_directory/interleave.out" \
+    2>"$temporary_directory/interleave.trace"
+test ! -s "$temporary_directory/interleave.out"
+grep -q '] read(.* <unfinished \.\.\.>$' \
+    "$temporary_directory/interleave.trace"
+grep -q '] <\.\.\. read resumed>) = 1$' \
+    "$temporary_directory/interleave.trace"
+
+set +e
+"$program" -e trace=mmap -- "$fixtures/fault_fixture" \
+    >"$temporary_directory/fault.out" \
+    2>"$temporary_directory/fault.trace"
+status=$?
+set -e
+test "$status" -eq 139
+grep -Eq '^--- SIGSEGV .*si_addr=0x[0-9a-f]+' \
+    "$temporary_directory/fault.trace"
+grep -q '^+++ killed by SIGSEGV +++$' "$temporary_directory/fault.trace"
+
+set +e
+"$program" --format=ndjson -e trace=execve,getpid -- \
+    "$fixtures/exit_fixture" >"$temporary_directory/ndjson.out" \
+    2>"$temporary_directory/events.ndjson"
+status=$?
+set -e
+test "$status" -eq 7
+test ! -s "$temporary_directory/ndjson.out"
+"$validator" "$temporary_directory/events.ndjson"
+grep -q 'execve(\\"build/tests/fixtures/exit_fixt' \
+    "$temporary_directory/events.ndjson"
+
+set +e
+"$program" --format=ndjson -e trace=tgkill -- \
+    "$fixtures/signal_state_fixture" \
+    >"$temporary_directory/signal-ndjson.out" \
+    2>"$temporary_directory/signal.ndjson"
+status=$?
+set -e
+test "$status" -eq 143
+"$validator" "$temporary_directory/signal.ndjson" syntax-only
+grep -q '"type":"signal".*"name":"SIGSTOP"' \
+    "$temporary_directory/signal.ndjson"
+grep -q '"type":"process-exit".*"status":15.*"signaled":true' \
+    "$temporary_directory/signal.ndjson"
+
+set +e
 "$program" -f -e trace=clone,clone3,execve,getpid,wait4 -- \
     "$fixtures/follow_fixture" >"$temporary_directory/follow.out" \
     2>"$temporary_directory/follow.trace"
@@ -90,6 +162,17 @@ test ! -s "$temporary_directory/follow.out"
 test "$(grep -c '+++ spawned ' "$temporary_directory/follow.trace")" -ge 2
 test "$(grep -c '] execve(' "$temporary_directory/follow.trace")" -ge 2
 test "$(grep -c '] getpid() = ' "$temporary_directory/follow.trace")" -ge 2
+
+set +e
+"$program" -f --format=ndjson -e trace=execve,getpid -- \
+    "$fixtures/follow_fixture" >"$temporary_directory/follow-ndjson.out" \
+    2>"$temporary_directory/follow.ndjson"
+status=$?
+set -e
+test "$status" -eq 5
+"$validator" "$temporary_directory/follow.ndjson" syntax-only
+test "$(grep -c '"type":"process-start"' \
+    "$temporary_directory/follow.ndjson")" -ge 2
 
 "$program" -e trace=getpid -- "$fixtures/attach_fixture" \
     >"$temporary_directory/launch-shutdown.out" \
@@ -153,6 +236,30 @@ for unused in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 \
     sleep 0.025
 done
 test "$attached" = true
+calls_before_stop=$(grep -c '] getpid() = ' "$temporary_directory/attach.trace")
+kill -STOP "$target_pid"
+stopped=false
+for unused in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    if grep -q '^State:[[:space:]]*[Tt]' "/proc/$target_pid/status"; then
+        stopped=true
+        break
+    fi
+    sleep 0.025
+done
+test "$stopped" = true
+kill -CONT "$target_pid"
+continued=false
+for unused in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 \
+              21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40; do
+    calls_after_continue=$(grep -c '] getpid() = ' \
+        "$temporary_directory/attach.trace")
+    if test "$calls_after_continue" -gt "$calls_before_stop"; then
+        continued=true
+        break
+    fi
+    sleep 0.025
+done
+test "$continued" = true
 kill -INT "$tracer_pid"
 set +e
 wait "$tracer_pid"
@@ -170,4 +277,4 @@ wait "$target_pid"
 target_pid=
 test ! -s "$temporary_directory/attach.target.err"
 
-echo "ok launch, follow, attach/detach, syscall, signal, and status behavior"
+echo "ok launch, follow, attach/detach, syscall, signal, NDJSON, and status behavior"

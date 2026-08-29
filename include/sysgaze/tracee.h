@@ -8,6 +8,7 @@
 
 enum sg_tracee_phase {
     SG_TRACEE_NEW,
+    SG_TRACEE_RUNNING,
     SG_TRACEE_STOPPED,
     SG_TRACEE_IN_SYSCALL,
     SG_TRACEE_GROUP_STOPPED,

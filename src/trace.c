@@ -21,8 +21,8 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "sysgaze/buffer.h"
 #include "sysgaze/decoder.h"
+#include "sysgaze/output.h"
 #include "sysgaze/syscall_catalog.h"
 #include "sysgaze/tracee.h"
 #include "sysgaze/tracee_table.h"
@@ -40,7 +40,8 @@ struct trace_context {
     const struct sg_config *config;
     struct sg_tracee_table tracees;
     struct sg_decoder decoder;
-    FILE *output;
+    struct sg_output output;
+    FILE *stream;
     pid_t root_tid;
     int root_status;
     bool root_status_known;
@@ -61,17 +62,17 @@ static void set_error(char *error, size_t error_size, const char *format, ...)
     va_end(arguments);
 }
 
-static bool validate_stage_two_options(const struct sg_config *config,
-                                       char *error, size_t error_size)
+static bool validate_runtime_options(const struct sg_config *config,
+                                     char *error, size_t error_size)
 {
     if (config->summary) {
         set_error(error, error_size,
                   "summary mode is not implemented until Stage 6");
         return false;
     }
-    if (config->format != SG_FORMAT_TEXT) {
+    if (config->format == SG_FORMAT_JSON) {
         set_error(error, error_size,
-                  "structured output is not implemented until Stage 5");
+                  "JSON event output is not supported; use NDJSON");
         return false;
     }
     if (config->seccomp_bpf) {
@@ -206,6 +207,22 @@ static bool resume_tracee(pid_t tid, int signal_number,
     return true;
 }
 
+static bool listen_tracee(pid_t tid, char *error, size_t error_size)
+{
+    if (ptrace(PTRACE_LISTEN, tid, NULL, NULL) < 0) {
+        set_error(error, error_size, "PTRACE_LISTEN for %ld failed: %s",
+                  (long)tid, strerror(errno));
+        return false;
+    }
+    return true;
+}
+
+static bool is_stopping_signal(int signal_number)
+{
+    return signal_number == SIGSTOP || signal_number == SIGTSTP ||
+           signal_number == SIGTTIN || signal_number == SIGTTOU;
+}
+
 static bool is_restart_result(int64_t result)
 {
     return result == -SG_RESTART_SYS || result == -SG_RESTART_NOINTR ||
@@ -250,11 +267,61 @@ static void move_syscall_event(struct sg_syscall_event *destination,
     memset(source, 0, sizeof(*source));
 }
 
-static bool write_tid_prefix(struct trace_context *context,
-                             const struct sg_tracee *tracee)
+static bool emit_event(struct trace_context *context,
+                       const struct sg_event *event,
+                       char *error, size_t error_size)
 {
-    return !context->show_tids ||
-           fprintf(context->output, "[pid %ld] ", (long)tracee->tid) >= 0;
+    return sg_output_write_event(&context->output, event, error, error_size);
+}
+
+static bool stamp_event(struct sg_event *event, char *error,
+                        size_t error_size)
+{
+    if (clock_gettime(CLOCK_MONOTONIC, &event->observed_at) < 0) {
+        set_error(error, error_size, "clock_gettime failed: %s",
+                  strerror(errno));
+        return false;
+    }
+    return true;
+}
+
+static bool flush_unfinished_syscalls(struct trace_context *context,
+                                      pid_t except_tid,
+                                      char *error, size_t error_size)
+{
+    size_t index;
+
+    for (index = 0U; index < context->tracees.capacity; ++index) {
+        struct sg_tracee *tracee;
+        struct sg_syscall_event *syscall = NULL;
+        struct sg_event event = {0};
+
+        if (context->tracees.slots[index].state != SG_TRACEE_SLOT_OCCUPIED) {
+            continue;
+        }
+        tracee = &context->tracees.slots[index].tracee;
+        if (tracee->tid == except_tid) {
+            continue;
+        }
+        if (tracee->has_pending_syscall) {
+            syscall = &tracee->pending_syscall;
+        } else if (tracee->has_interrupted_syscall) {
+            syscall = &tracee->interrupted_syscall;
+        }
+        if (syscall == NULL || !selected(context, syscall->number)) {
+            continue;
+        }
+        event.kind = SG_EVENT_SYSCALL;
+        event.tid = tracee->tid;
+        event.tgid = tracee->tgid;
+        event.observed_at = syscall->entered_at;
+        event.data.syscall = *syscall;
+        event.data.syscall.completed = false;
+        if (!emit_event(context, &event, error, error_size)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 static bool write_syscall(struct trace_context *context,
@@ -262,81 +329,70 @@ static bool write_syscall(struct trace_context *context,
                           const struct sg_syscall_event *event,
                           char *error, size_t error_size)
 {
-    struct sg_buffer rendered;
-    bool decoded;
+    struct sg_event output_event = {0};
 
     if (!selected(context, event->number)) {
         return true;
     }
-    sg_buffer_init(&rendered);
-    decoded = sg_decode_syscall(&context->decoder, tracee->tid, event,
-                                &rendered) &&
-              sg_buffer_append_cstr(&rendered, "\n");
-    if (!decoded) {
-        sg_buffer_destroy(&rendered);
-        set_error(error, error_size,
-                  "cannot decode syscall %ld: allocation failed",
-                  event->number);
+    if (!flush_unfinished_syscalls(context, tracee->tid, error, error_size)) {
         return false;
     }
-    if (!write_tid_prefix(context, tracee) ||
-        fwrite(rendered.data, 1U, rendered.length, context->output) !=
-            rendered.length ||
-        fflush(context->output) == EOF) {
-        sg_buffer_destroy(&rendered);
-        goto output_failure;
-    }
-    sg_buffer_destroy(&rendered);
-    return true;
-
-output_failure:
-    set_error(error, error_size, "cannot write trace output: %s",
-              strerror(errno));
-    return false;
+    output_event.kind = SG_EVENT_SYSCALL;
+    output_event.tid = tracee->tid;
+    output_event.tgid = tracee->tgid;
+    output_event.observed_at = event->exited_at;
+    output_event.data.syscall = *event;
+    return emit_event(context, &output_event, error, error_size);
 }
 
 static bool write_signal(struct trace_context *context,
-                         const struct sg_tracee *tracee, int signal_number,
+                         const struct sg_tracee *tracee,
+                         const siginfo_t *signal_info,
                          char *error, size_t error_size)
 {
-    const char *description = strsignal(signal_number);
+    struct sg_event event = {0};
+    int signal_number = signal_info->si_signo;
 
-    if (!write_tid_prefix(context, tracee) ||
-        fprintf(context->output, "--- signal %d (%s) ---\n", signal_number,
-                description == NULL ? "unknown" : description) < 0 ||
-        fflush(context->output) == EOF) {
-        set_error(error, error_size, "cannot write trace output: %s",
-                  strerror(errno));
+    if (!flush_unfinished_syscalls(context, -1, error, error_size)) {
         return false;
     }
-    return true;
+    event.kind = SG_EVENT_SIGNAL;
+    event.tid = tracee->tid;
+    event.tgid = tracee->tgid;
+    if (!stamp_event(&event, error, error_size)) {
+        return false;
+    }
+    event.data.signal.signal_number = signal_number;
+    event.data.signal.signal_code = signal_info->si_code;
+    if (signal_info->si_code > 0 &&
+        (signal_number == SIGILL || signal_number == SIGFPE ||
+         signal_number == SIGSEGV || signal_number == SIGBUS ||
+         signal_number == SIGTRAP)) {
+        event.data.signal.fault_address =
+            (uintptr_t)signal_info->si_addr;
+    }
+    return emit_event(context, &event, error, error_size);
 }
 
 static bool write_exit(struct trace_context *context,
                        const struct sg_tracee *tracee, int status,
                        char *error, size_t error_size)
 {
-    int result;
+    struct sg_event event = {0};
 
-    if (!write_tid_prefix(context, tracee)) {
-        result = -1;
-    } else if (WIFEXITED(status)) {
-        result = fprintf(context->output, "+++ exited with %d +++\n",
-                         WEXITSTATUS(status));
-    } else {
-        int signal_number = WTERMSIG(status);
-        const char *description = strsignal(signal_number);
-
-        result = fprintf(context->output, "+++ killed by signal %d (%s) +++\n",
-                         signal_number,
-                         description == NULL ? "unknown" : description);
-    }
-    if (result < 0 || fflush(context->output) == EOF) {
-        set_error(error, error_size, "cannot write trace output: %s",
-                  strerror(errno));
+    if (!flush_unfinished_syscalls(context, -1, error, error_size)) {
         return false;
     }
-    return true;
+    event.kind = SG_EVENT_PROCESS_EXIT;
+    event.tid = tracee->tid;
+    event.tgid = tracee->tgid;
+    if (!stamp_event(&event, error, error_size)) {
+        return false;
+    }
+    event.data.lifecycle.status = WIFEXITED(status) ? WEXITSTATUS(status)
+                                                    : WTERMSIG(status);
+    event.data.lifecycle.signaled = WIFSIGNALED(status);
+    return emit_event(context, &event, error, error_size);
 }
 
 static bool begin_syscall(struct trace_context *context,
@@ -379,6 +435,10 @@ static bool begin_syscall(struct trace_context *context,
         tracee->interrupted_restart_ready &&
         ((long)number == tracee->interrupted_syscall.number ||
          (long)number == SYS_restart_syscall)) {
+        if (!flush_unfinished_syscalls(context, tracee->tid, error,
+                                       error_size)) {
+            return false;
+        }
         move_syscall_event(&tracee->pending_syscall,
                            &tracee->interrupted_syscall);
         tracee->has_interrupted_syscall = false;
@@ -392,6 +452,19 @@ static bool begin_syscall(struct trace_context *context,
         tracee->interrupted_restart_ready) {
         /* The first post-sigreturn entry was not the interrupted call, so the
          * kernel exposed EINTR to user space instead of restarting it. */
+        tracee->interrupted_syscall.result = -1;
+        tracee->interrupted_syscall.error_number = EINTR;
+        tracee->interrupted_syscall.completed = true;
+        if (clock_gettime(CLOCK_MONOTONIC,
+                          &tracee->interrupted_syscall.exited_at) < 0) {
+            set_error(error, error_size, "clock_gettime failed: %s",
+                      strerror(errno));
+            return false;
+        }
+        if (!write_syscall(context, tracee, &tracee->interrupted_syscall,
+                           error, error_size)) {
+            return false;
+        }
         sg_decoder_release_event(&tracee->interrupted_syscall);
         tracee->has_interrupted_syscall = false;
         tracee->interrupted_restart_ready = false;
@@ -410,6 +483,11 @@ static bool begin_syscall(struct trace_context *context,
         !sg_decoder_capture_entry(&context->decoder, tracee->tid, &event)) {
         set_error(error, error_size,
                   "cannot capture syscall arguments: allocation failed");
+        return false;
+    }
+    if (selected(context, event.number) &&
+        !flush_unfinished_syscalls(context, tracee->tid, error, error_size)) {
+        sg_decoder_release_event(&event);
         return false;
     }
     move_syscall_event(&tracee->pending_syscall, &event);
@@ -791,17 +869,25 @@ static bool prepare_attach(struct trace_context *context,
     return true;
 }
 
-static bool write_process_start(struct trace_context *context, pid_t parent,
-                                pid_t child, char *error, size_t error_size)
+static bool write_process_start(struct trace_context *context,
+                                const struct sg_tracee *parent, pid_t child,
+                                unsigned int ptrace_event,
+                                char *error, size_t error_size)
 {
-    if (fprintf(context->output, "[pid %ld] +++ spawned %ld +++\n",
-                (long)parent, (long)child) < 0 ||
-        fflush(context->output) == EOF) {
-        set_error(error, error_size, "cannot write trace output: %s",
-                  strerror(errno));
+    struct sg_event event = {0};
+
+    if (!flush_unfinished_syscalls(context, -1, error, error_size)) {
         return false;
     }
-    return true;
+    event.kind = SG_EVENT_PROCESS_START;
+    event.tid = parent->tid;
+    event.tgid = parent->tgid;
+    if (!stamp_event(&event, error, error_size)) {
+        return false;
+    }
+    event.data.lifecycle.related_tid = child;
+    event.data.lifecycle.ptrace_event = ptrace_event;
+    return emit_event(context, &event, error, error_size);
 }
 
 static bool handle_ptrace_event(struct trace_context *context,
@@ -816,11 +902,6 @@ static bool handle_ptrace_event(struct trace_context *context,
             tracee->phase = SG_TRACEE_IN_SYSCALL;
         }
         tracee->newborn = false;
-        return true;
-    }
-    if (event == PTRACE_EVENT_STOP) {
-        tracee->newborn = false;
-        tracee->phase = SG_TRACEE_STOPPED;
         return true;
     }
     if (event != PTRACE_EVENT_FORK && event != PTRACE_EVENT_VFORK &&
@@ -852,7 +933,9 @@ static bool handle_ptrace_event(struct trace_context *context,
             }
             return false;
         }
-        if (!write_process_start(context, parent_tid, child, error,
+        tracee = sg_tracee_table_get(&context->tracees, parent_tid);
+        if (tracee == NULL ||
+            !write_process_start(context, tracee, child, event, error,
                                  error_size)) {
             return false;
         }
@@ -881,9 +964,14 @@ static bool migrate_exec_tid(struct trace_context *context, pid_t waited,
         have_source = true;
     }
     if (!have_source) {
-        return add_tracee(context, waited, waited,
-                          context->config->mode == SG_RUN_ATTACH, false,
-                          error, error_size);
+        bool added = add_tracee(context, waited, waited,
+                               context->config->mode == SG_RUN_ATTACH, false,
+                               error, error_size);
+
+        if (added) {
+            sg_output_migrate_tid(&context->output, former, waited);
+        }
+        return added;
     }
     source.tid = waited;
     source.tgid = waited;
@@ -895,6 +983,7 @@ static bool migrate_exec_tid(struct trace_context *context, pid_t waited,
     }
     destination = sg_tracee_table_get(&context->tracees, waited);
     *destination = source;
+    sg_output_migrate_tid(&context->output, former, waited);
     if (context->root_tid == former) {
         context->root_tid = waited;
     }
@@ -977,7 +1066,7 @@ static void kill_all_tracees(struct trace_context *context)
         (void)kill(context->root_tid, SIGKILL);
     }
     do {
-        waited = waitpid(-1, &status, __WALL);
+        waited = waitpid(-1, &status, __WALL | WCONTINUED);
     } while (waited > 0 || (waited < 0 && errno == EINTR));
 }
 
@@ -1117,6 +1206,12 @@ static bool trace_loop(struct trace_context *context, int *command_status,
             continue;
         }
 
+        if (WIFCONTINUED(status)) {
+            tracee->phase = SG_TRACEE_RUNNING;
+            tracee->in_ptrace_stop = false;
+            continue;
+        }
+
         if (WIFEXITED(status) || WIFSIGNALED(status)) {
             struct sg_tracee removed;
 
@@ -1136,6 +1231,7 @@ static bool trace_loop(struct trace_context *context, int *command_status,
         {
             int stop = WSTOPSIG(status);
             int delivery_signal = 0;
+            bool listen = false;
 
             tracee->in_ptrace_stop = true;
             tracee->phase = SG_TRACEE_STOPPED;
@@ -1143,28 +1239,50 @@ static bool trace_loop(struct trace_context *context, int *command_status,
                 if (!handle_syscall_stop(context, tracee, error, error_size)) {
                     return false;
                 }
+            } else if (ptrace_event == PTRACE_EVENT_STOP) {
+                tracee->newborn = false;
+                if (stop != SIGTRAP) {
+                    tracee->phase = SG_TRACEE_GROUP_STOPPED;
+                    listen = tracee->attached;
+                }
             } else if (ptrace_event != 0U) {
                 if (!handle_ptrace_event(context, tracee, ptrace_event,
                                          error, error_size)) {
                     return false;
                 }
-            } else if (stop == SIGTRAP) {
-                tracee->newborn = false;
             } else if (tracee->newborn && stop == SIGSTOP) {
                 tracee->newborn = false;
             } else {
-                tracee->pending_signal = stop;
-                if (!write_signal(context, tracee, stop, error, error_size)) {
-                    return false;
+                siginfo_t signal_info = {0};
+
+                if (ptrace(PTRACE_GETSIGINFO, waited, NULL, &signal_info) < 0) {
+                    if (errno == EINVAL && is_stopping_signal(stop)) {
+                        tracee->phase = SG_TRACEE_GROUP_STOPPED;
+                        listen = tracee->attached;
+                    } else {
+                        set_error(error, error_size,
+                                  "PTRACE_GETSIGINFO for %ld failed: %s",
+                                  (long)waited, strerror(errno));
+                        return false;
+                    }
+                } else {
+                    tracee->newborn = false;
+                    tracee->pending_signal = stop;
+                    if (!write_signal(context, tracee, &signal_info, error,
+                                      error_size)) {
+                        return false;
+                    }
+                    delivery_signal = stop;
                 }
-                delivery_signal = stop;
             }
 
             tracee = sg_tracee_table_get(&context->tracees, waited);
             if (tracee == NULL) {
                 continue;
             }
-            if (!resume_tracee(waited, delivery_signal, error, error_size)) {
+            if (listen ? !listen_tracee(waited, error, error_size)
+                       : !resume_tracee(waited, delivery_signal, error,
+                                       error_size)) {
                 if (errno == ESRCH) {
                     continue;
                 }
@@ -1172,6 +1290,9 @@ static bool trace_loop(struct trace_context *context, int *command_status,
             }
             tracee->in_ptrace_stop = false;
             tracee->pending_signal = 0;
+            if (!listen) {
+                tracee->phase = SG_TRACEE_RUNNING;
+            }
         }
         if (shutdown_signal != 0) {
             *command_status = 128 + shutdown_signal;
@@ -1198,7 +1319,7 @@ bool sg_trace_run(const struct sg_config *config, int *command_status,
         set_error(error, error_size, "invalid tracing configuration");
         return false;
     }
-    if (!validate_stage_two_options(config, error, error_size)) {
+    if (!validate_runtime_options(config, error, error_size)) {
         return false;
     }
     context.config = config;
@@ -1206,8 +1327,16 @@ bool sg_trace_run(const struct sg_config *config, int *command_status,
     context.decoder.memory.read = read_tracee_memory;
     context.show_tids = config->follow || config->mode == SG_RUN_ATTACH;
     sg_tracee_table_init(&context.tracees);
-    context.output = open_output(config->output_path, error, error_size);
-    if (context.output == NULL) {
+    context.stream = open_output(config->output_path, error, error_size);
+    if (context.stream == NULL) {
+        return false;
+    }
+    if (!sg_output_init(&context.output, context.stream, config->format,
+                        &context.decoder, context.show_tids,
+                        error, error_size)) {
+        if (context.stream != stderr) {
+            (void)fclose(context.stream);
+        }
         return false;
     }
 
@@ -1257,7 +1386,11 @@ bool sg_trace_run(const struct sg_config *config, int *command_status,
     shutdown_signal = 0;
     release_all_tracees(&context);
 
-    if (context.output != stderr && fclose(context.output) == EOF && success) {
+    if (success) {
+        success = sg_output_finish(&context.output, error, error_size);
+    }
+    sg_output_destroy(&context.output);
+    if (context.stream != stderr && fclose(context.stream) == EOF && success) {
         set_error(error, error_size, "cannot close trace output '%s': %s",
                   config->output_path, strerror(errno));
         success = false;

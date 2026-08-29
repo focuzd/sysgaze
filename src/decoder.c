@@ -1078,9 +1078,9 @@ static bool append_result(const struct syscall_signature *signature,
     return sg_buffer_append_format(output, " = %" PRId64, event->result);
 }
 
-bool sg_decode_syscall(const struct sg_decoder *decoder, pid_t tid,
-                       const struct sg_syscall_event *event,
-                       struct sg_buffer *output)
+bool sg_decode_syscall_entry(const struct sg_decoder *decoder, pid_t tid,
+                             const struct sg_syscall_event *event,
+                             struct sg_buffer *output)
 {
     const struct syscall_signature *signature = find_signature(event->number);
     const struct sg_syscall_descriptor *descriptor =
@@ -1115,6 +1115,20 @@ bool sg_decode_syscall(const struct sg_decoder *decoder, pid_t tid,
             return false;
         }
     }
-    return sg_buffer_append_cstr(output, ")") &&
-           append_result(signature, event, output);
+    return true;
+}
+
+bool sg_decode_syscall_result(const struct sg_syscall_event *event,
+                              struct sg_buffer *output)
+{
+    return append_result(find_signature(event->number), event, output);
+}
+
+bool sg_decode_syscall(const struct sg_decoder *decoder, pid_t tid,
+                       const struct sg_syscall_event *event,
+                       struct sg_buffer *output)
+{
+    return sg_decode_syscall_entry(decoder, tid, event, output) &&
+           sg_buffer_append_cstr(output, ")") &&
+           sg_decode_syscall_result(event, output);
 }

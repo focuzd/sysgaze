@@ -24,6 +24,11 @@ bool sg_decode_syscall(const struct sg_decoder *decoder,
                        pid_t tid,
                        const struct sg_syscall_event *event,
                        struct sg_buffer *output);
+bool sg_decode_syscall_entry(const struct sg_decoder *decoder, pid_t tid,
+                             const struct sg_syscall_event *event,
+                             struct sg_buffer *output);
+bool sg_decode_syscall_result(const struct sg_syscall_event *event,
+                              struct sg_buffer *output);
 bool sg_decoder_capture_entry(const struct sg_decoder *decoder, pid_t tid,
                               struct sg_syscall_event *event);
 void sg_decoder_release_event(struct sg_syscall_event *event);
