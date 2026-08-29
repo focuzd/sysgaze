@@ -12,6 +12,7 @@
 #include "sysgaze/cli.h"
 #include "sysgaze/decoder.h"
 #include "sysgaze/filter.h"
+#include "sysgaze/stats.h"
 #include "sysgaze/syscall_catalog.h"
 #include "sysgaze/tracee_table.h"
 
@@ -492,6 +493,9 @@ static bool test_cli_rejects_invalid_combinations(void)
     const char *const attach_command[] = {"sysgaze", "-p", "1", "--", "echo"};
     const char *const bad_pid[] = {"sysgaze", "-p", "-1"};
     const char *const json_stream[] = {"sysgaze", "--format=json", "--", "echo"};
+    const char *const ndjson_summary[] = {
+        "sysgaze", "-c", "--format=ndjson", "--", "echo"
+    };
     const char *const seccomp_no_filter[] = {"sysgaze", "--seccomp-bpf", "--", "echo"};
     const char *const seccomp_attach[] = {
         "sysgaze", "--seccomp-bpf", "-e", "trace=read", "-p", "1"
@@ -512,6 +516,8 @@ static bool test_cli_rejects_invalid_combinations(void)
                        attach_command));
     CHECK(cli_is_error(sizeof(bad_pid) / sizeof(bad_pid[0]), bad_pid));
     CHECK(cli_is_error(sizeof(json_stream) / sizeof(json_stream[0]), json_stream));
+    CHECK(cli_is_error(sizeof(ndjson_summary) / sizeof(ndjson_summary[0]),
+                       ndjson_summary));
     CHECK(cli_is_error(sizeof(seccomp_no_filter) / sizeof(seccomp_no_filter[0]),
                        seccomp_no_filter));
     CHECK(cli_is_error(sizeof(seccomp_attach) / sizeof(seccomp_attach[0]),
@@ -533,6 +539,50 @@ static bool test_cli_actions(void)
                     sizeof(error)) == SG_CLI_HELP);
     CHECK(parse_cli(sizeof(version) / sizeof(version[0]), version, &config, error,
                     sizeof(error)) == SG_CLI_VERSION);
+    return true;
+}
+
+static bool test_statistics_aggregation_and_ordering(void)
+{
+    struct sg_stats stats;
+    struct sg_syscall_stat *rows = NULL;
+    size_t count = 0U;
+    struct sg_syscall_event read_event = {
+        .number = SYS_read,
+        .error_number = 0,
+        .entered_at = {.tv_sec = 1, .tv_nsec = 100},
+        .exited_at = {.tv_sec = 1, .tv_nsec = 400},
+        .completed = true
+    };
+    struct sg_syscall_event write_event = {
+        .number = SYS_write,
+        .error_number = EBADF,
+        .entered_at = {.tv_sec = 2, .tv_nsec = 0},
+        .exited_at = {.tv_sec = 2, .tv_nsec = 200},
+        .completed = true
+    };
+    struct sg_syscall_event getpid_event = {
+        .number = SYS_getpid,
+        .entered_at = {.tv_sec = 3, .tv_nsec = 10},
+        .exited_at = {.tv_sec = 3, .tv_nsec = 210},
+        .completed = true
+    };
+
+    sg_stats_init(&stats);
+    CHECK(sg_stats_record(&stats, &read_event));
+    CHECK(sg_stats_record(&stats, &write_event));
+    CHECK(sg_stats_record(&stats, &getpid_event));
+    CHECK(stats.total_calls == 3U);
+    CHECK(stats.total_errors == 1U);
+    CHECK(stats.total_nanoseconds == 700U);
+    CHECK(sg_stats_sorted_copy(&stats, &rows, &count));
+    CHECK(count == 3U);
+    CHECK(rows[0].number == SYS_read);
+    CHECK(rows[1].number == SYS_getpid);
+    CHECK(rows[2].number == SYS_write);
+    CHECK(rows[2].errors == 1U);
+    free(rows);
+    sg_stats_destroy(&stats);
     return true;
 }
 
@@ -567,6 +617,7 @@ int main(void)
     run_test("CLI attach", test_cli_attach_configuration);
     run_test("CLI validation", test_cli_rejects_invalid_combinations);
     run_test("CLI actions", test_cli_actions);
+    run_test("statistics", test_statistics_aggregation_and_ordering);
 
     (void)fprintf(stderr, "%u tests, %u failures\n", tests_run, tests_failed);
     return tests_failed == 0U ? EXIT_SUCCESS : EXIT_FAILURE;

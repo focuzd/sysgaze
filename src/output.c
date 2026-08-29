@@ -401,6 +401,7 @@ static bool append_json_event(struct sg_output *output,
 bool sg_output_init(struct sg_output *output, FILE *stream,
                     enum sg_output_format format,
                     const struct sg_decoder *decoder, bool show_tids,
+                    bool summary,
                     char *error, size_t error_size)
 {
     struct sg_buffer metadata;
@@ -411,7 +412,8 @@ bool sg_output_init(struct sg_output *output, FILE *stream,
     output->decoder = decoder;
     output->format = format;
     output->show_tids = show_tids;
-    if (format == SG_FORMAT_TEXT) {
+    output->summary = summary;
+    if (format == SG_FORMAT_TEXT || summary) {
         return true;
     }
     sg_buffer_init(&metadata);
@@ -436,6 +438,9 @@ bool sg_output_write_event(struct sg_output *output,
     struct sg_buffer rendered;
     bool ok;
 
+    if (output->summary) {
+        return true;
+    }
     if (output->format == SG_FORMAT_TEXT) {
         return write_text_event(output, event, error, error_size);
     }
@@ -468,6 +473,136 @@ void sg_output_migrate_tid(struct sg_output *output, pid_t former_tid,
     } else {
         output->unfinished_tids[position] = current_tid;
     }
+}
+
+static bool write_text_summary(struct sg_output *output,
+                               const struct sg_stats *stats,
+                               char *error, size_t error_size)
+{
+    struct sg_syscall_stat *rows;
+    size_t count;
+    size_t index;
+    struct sg_buffer rendered;
+    bool ok;
+
+    if (!sg_stats_sorted_copy(stats, &rows, &count)) {
+        set_error(error, error_size, "cannot allocate sorted statistics");
+        return false;
+    }
+    sg_buffer_init(&rendered);
+    ok = sg_buffer_append_cstr(
+        &rendered,
+        "% time     seconds  usecs/call     calls    errors syscall\n"
+        "------ ----------- ----------- --------- --------- ----------------\n");
+    for (index = 0U; ok && index < count; ++index) {
+        char fallback[64];
+        const char *name = syscall_name(rows[index].number, fallback,
+                                        sizeof(fallback));
+        double percent = stats->total_nanoseconds == 0U
+                             ? 0.0
+                             : (double)rows[index].nanoseconds * 100.0 /
+                                   (double)stats->total_nanoseconds;
+        double seconds = (double)rows[index].nanoseconds / 1000000000.0;
+        uint64_t microseconds = rows[index].calls == 0U
+                                    ? 0U
+                                    : rows[index].nanoseconds /
+                                          rows[index].calls / UINT64_C(1000);
+
+        ok = sg_buffer_append_format(
+            &rendered,
+            "%6.2f %11.6f %11" PRIu64 " %9" PRIu64 " %9" PRIu64 " %s\n",
+            percent, seconds, microseconds, rows[index].calls,
+            rows[index].errors, name);
+    }
+    ok = ok && sg_buffer_append_cstr(
+                   &rendered,
+                   "------ ----------- ----------- --------- --------- ----------------\n") &&
+         sg_buffer_append_format(
+             &rendered,
+             "%6.2f %11.6f %11s %9" PRIu64 " %9" PRIu64 " total",
+             stats->total_nanoseconds == 0U ? 0.0 : 100.0,
+             (double)stats->total_nanoseconds / 1000000000.0, "",
+             stats->total_calls, stats->total_errors);
+    free(rows);
+    if (!ok) {
+        sg_buffer_destroy(&rendered);
+        set_error(error, error_size, "cannot allocate text summary");
+        return false;
+    }
+    ok = write_buffer(output, &rendered, error, error_size);
+    sg_buffer_destroy(&rendered);
+    return ok;
+}
+
+static bool write_json_summary(struct sg_output *output,
+                               const struct sg_stats *stats,
+                               char *error, size_t error_size)
+{
+    struct sg_syscall_stat *rows;
+    size_t count;
+    size_t index;
+    struct sg_buffer rendered;
+    bool ok;
+
+    if (!sg_stats_sorted_copy(stats, &rows, &count)) {
+        set_error(error, error_size, "cannot allocate sorted statistics");
+        return false;
+    }
+    sg_buffer_init(&rendered);
+    ok = sg_buffer_append_format(
+        &rendered,
+        "{\"schema\":\"sysgaze.summary/v1\",\"type\":\"summary\","
+        "\"total_calls\":\"%" PRIu64 "\",\"total_errors\":\"%" PRIu64
+        "\",\"total_nanoseconds\":\"%" PRIu64 "\",\"syscalls\":[",
+        stats->total_calls, stats->total_errors, stats->total_nanoseconds);
+    for (index = 0U; ok && index < count; ++index) {
+        char fallback[64];
+        const char *name = syscall_name(rows[index].number, fallback,
+                                        sizeof(fallback));
+        uint64_t average = rows[index].calls == 0U
+                               ? 0U
+                               : rows[index].nanoseconds / rows[index].calls;
+        double percent = stats->total_nanoseconds == 0U
+                             ? 0.0
+                             : (double)rows[index].nanoseconds * 100.0 /
+                                   (double)stats->total_nanoseconds;
+
+        ok = (index == 0U || sg_buffer_append_cstr(&rendered, ",")) &&
+             sg_buffer_append_format(
+                 &rendered, "{\"number\":\"%ld\",\"name\":",
+                 rows[index].number) &&
+             append_json_string(&rendered, name) &&
+             sg_buffer_append_format(
+                 &rendered,
+                 ",\"calls\":\"%" PRIu64 "\",\"errors\":\"%" PRIu64
+                 "\",\"nanoseconds\":\"%" PRIu64
+                 "\",\"average_nanoseconds\":\"%" PRIu64
+                 "\",\"percent\":\"%.2f\"}",
+                 rows[index].calls, rows[index].errors,
+                 rows[index].nanoseconds, average, percent);
+    }
+    ok = ok && sg_buffer_append_cstr(&rendered, "]}");
+    free(rows);
+    if (!ok) {
+        sg_buffer_destroy(&rendered);
+        set_error(error, error_size, "cannot allocate JSON summary");
+        return false;
+    }
+    ok = write_buffer(output, &rendered, error, error_size);
+    sg_buffer_destroy(&rendered);
+    return ok;
+}
+
+bool sg_output_write_summary(struct sg_output *output,
+                             const struct sg_stats *stats,
+                             char *error, size_t error_size)
+{
+    if (!output->summary) {
+        return true;
+    }
+    return output->format == SG_FORMAT_TEXT
+               ? write_text_summary(output, stats, error, error_size)
+               : write_json_summary(output, stats, error, error_size);
 }
 
 bool sg_output_finish(struct sg_output *output, char *error, size_t error_size)

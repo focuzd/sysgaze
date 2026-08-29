@@ -23,6 +23,7 @@
 
 #include "sysgaze/decoder.h"
 #include "sysgaze/output.h"
+#include "sysgaze/stats.h"
 #include "sysgaze/syscall_catalog.h"
 #include "sysgaze/tracee.h"
 #include "sysgaze/tracee_table.h"
@@ -41,6 +42,7 @@ struct trace_context {
     struct sg_tracee_table tracees;
     struct sg_decoder decoder;
     struct sg_output output;
+    struct sg_stats stats;
     FILE *stream;
     pid_t root_tid;
     int root_status;
@@ -65,12 +67,7 @@ static void set_error(char *error, size_t error_size, const char *format, ...)
 static bool validate_runtime_options(const struct sg_config *config,
                                      char *error, size_t error_size)
 {
-    if (config->summary) {
-        set_error(error, error_size,
-                  "summary mode is not implemented until Stage 6");
-        return false;
-    }
-    if (config->format == SG_FORMAT_JSON) {
+    if (config->format == SG_FORMAT_JSON && !config->summary) {
         set_error(error, error_size,
                   "JSON event output is not supported; use NDJSON");
         return false;
@@ -291,6 +288,10 @@ static bool flush_unfinished_syscalls(struct trace_context *context,
 {
     size_t index;
 
+    if (context->config->summary) {
+        return true;
+    }
+
     for (index = 0U; index < context->tracees.capacity; ++index) {
         struct sg_tracee *tracee;
         struct sg_syscall_event *syscall = NULL;
@@ -332,6 +333,15 @@ static bool write_syscall(struct trace_context *context,
     struct sg_event output_event = {0};
 
     if (!selected(context, event->number)) {
+        return true;
+    }
+    if (context->config->summary) {
+        if (!sg_stats_record(&context->stats, event)) {
+            set_error(error, error_size,
+                      "cannot aggregate statistics for syscall %ld",
+                      event->number);
+            return false;
+        }
         return true;
     }
     if (!flush_unfinished_syscalls(context, tracee->tid, error, error_size)) {
@@ -418,6 +428,12 @@ static bool begin_syscall(struct trace_context *context,
             tracee->pending_syscall.result = 0;
             tracee->pending_syscall.error_number = 0;
             tracee->pending_syscall.completed = true;
+            if (clock_gettime(CLOCK_MONOTONIC,
+                              &tracee->pending_syscall.exited_at) < 0) {
+                set_error(error, error_size, "clock_gettime failed: %s",
+                          strerror(errno));
+                return false;
+            }
             if (!write_syscall(context, tracee, &tracee->pending_syscall, error,
                                error_size)) {
                 return false;
@@ -479,7 +495,7 @@ static bool begin_syscall(struct trace_context *context,
                   strerror(errno));
         return false;
     }
-    if (selected(context, event.number) &&
+    if (selected(context, event.number) && !context->config->summary &&
         !sg_decoder_capture_entry(&context->decoder, tracee->tid, &event)) {
         set_error(error, error_size,
                   "cannot capture syscall arguments: allocation failed");
@@ -899,7 +915,22 @@ static bool handle_ptrace_event(struct trace_context *context,
 
     if (event == PTRACE_EVENT_EXEC) {
         if (tracee->has_pending_syscall) {
-            tracee->phase = SG_TRACEE_IN_SYSCALL;
+            tracee->pending_syscall.result = 0;
+            tracee->pending_syscall.error_number = 0;
+            tracee->pending_syscall.completed = true;
+            if (clock_gettime(CLOCK_MONOTONIC,
+                              &tracee->pending_syscall.exited_at) < 0) {
+                set_error(error, error_size, "clock_gettime failed: %s",
+                          strerror(errno));
+                return false;
+            }
+            if (!write_syscall(context, tracee, &tracee->pending_syscall,
+                               error, error_size)) {
+                return false;
+            }
+            sg_decoder_release_event(&tracee->pending_syscall);
+            tracee->has_pending_syscall = false;
+            tracee->phase = SG_TRACEE_STOPPED;
         }
         tracee->newborn = false;
         return true;
@@ -1327,16 +1358,18 @@ bool sg_trace_run(const struct sg_config *config, int *command_status,
     context.decoder.memory.read = read_tracee_memory;
     context.show_tids = config->follow || config->mode == SG_RUN_ATTACH;
     sg_tracee_table_init(&context.tracees);
+    sg_stats_init(&context.stats);
     context.stream = open_output(config->output_path, error, error_size);
     if (context.stream == NULL) {
         return false;
     }
     if (!sg_output_init(&context.output, context.stream, config->format,
-                        &context.decoder, context.show_tids,
+                        &context.decoder, context.show_tids, config->summary,
                         error, error_size)) {
         if (context.stream != stderr) {
             (void)fclose(context.stream);
         }
+        sg_stats_destroy(&context.stats);
         return false;
     }
 
@@ -1387,9 +1420,14 @@ bool sg_trace_run(const struct sg_config *config, int *command_status,
     release_all_tracees(&context);
 
     if (success) {
+        success = sg_output_write_summary(&context.output, &context.stats,
+                                          error, error_size);
+    }
+    if (success) {
         success = sg_output_finish(&context.output, error, error_size);
     }
     sg_output_destroy(&context.output);
+    sg_stats_destroy(&context.stats);
     if (context.stream != stderr && fclose(context.stream) == EOF && success) {
         set_error(error, error_size, "cannot close trace output '%s': %s",
                   config->output_path, strerror(errno));

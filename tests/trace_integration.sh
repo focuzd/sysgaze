@@ -151,6 +151,72 @@ grep -q '"type":"signal".*"name":"SIGSTOP"' \
 grep -q '"type":"process-exit".*"status":15.*"signaled":true' \
     "$temporary_directory/signal.ndjson"
 
+"$program" -e trace=getpid,write -- "$fixtures/summary_fixture" \
+    >"$temporary_directory/filter-text.out" \
+    2>"$temporary_directory/filter-text.trace"
+test "$(grep -c '^getpid() = ' "$temporary_directory/filter-text.trace")" -eq 3
+test "$(grep -c '^write(' "$temporary_directory/filter-text.trace")" -eq 2
+
+"$program" --format=ndjson -e trace=getpid,write -- \
+    "$fixtures/summary_fixture" >"$temporary_directory/filter-ndjson.out" \
+    2>"$temporary_directory/filter.ndjson"
+"$validator" "$temporary_directory/filter.ndjson" syntax-only
+test "$(grep -c '"type":"syscall"' \
+    "$temporary_directory/filter.ndjson")" -eq 5
+
+"$program" -c -e trace=getpid,write -- "$fixtures/summary_fixture" \
+    >"$temporary_directory/summary.out" \
+    2>"$temporary_directory/summary.txt"
+test ! -s "$temporary_directory/summary.out"
+grep -q '^% time.*syscall$' "$temporary_directory/summary.txt"
+grep -Eq '[[:space:]]3[[:space:]]+0 getpid$' \
+    "$temporary_directory/summary.txt"
+grep -Eq '[[:space:]]2[[:space:]]+1 write$' \
+    "$temporary_directory/summary.txt"
+grep -Eq '[[:space:]]5[[:space:]]+1 total$' \
+    "$temporary_directory/summary.txt"
+if grep -qE '^(getpid|write)\(' "$temporary_directory/summary.txt"; then
+    echo "event stream leaked into summary output" >&2
+    exit 1
+fi
+
+"$program" -c --format=json -e trace=getpid,write -- \
+    "$fixtures/summary_fixture" >"$temporary_directory/summary-json.out" \
+    2>"$temporary_directory/summary.json"
+test ! -s "$temporary_directory/summary-json.out"
+"$validator" "$temporary_directory/summary.json" summary
+grep -q '"total_calls":"5".*"total_errors":"1"' \
+    "$temporary_directory/summary.json"
+grep -q '"name":"getpid","calls":"3","errors":"0"' \
+    "$temporary_directory/summary.json"
+grep -q '"name":"write","calls":"2","errors":"1"' \
+    "$temporary_directory/summary.json"
+grep -q '"average_nanoseconds":"[0-9][0-9]*","percent":"[0-9][0-9]*\.[0-9][0-9]"' \
+    "$temporary_directory/summary.json"
+
+"$program" -c -e trace=getpid,!getpid -- "$fixtures/summary_fixture" \
+    >"$temporary_directory/empty-summary.out" \
+    2>"$temporary_directory/empty-summary.txt"
+grep -Eq '[[:space:]]0[[:space:]]+0 total$' \
+    "$temporary_directory/empty-summary.txt"
+if grep -q ' getpid$' "$temporary_directory/empty-summary.txt"; then
+    echo "empty-result filter produced a syscall summary row" >&2
+    exit 1
+fi
+
+set +e
+"$program" -c -e trace=%process,!getpid -- "$fixtures/exit_fixture" \
+    >"$temporary_directory/class-summary.out" \
+    2>"$temporary_directory/class-summary.txt"
+status=$?
+set -e
+test "$status" -eq 7
+grep -q ' execve$' "$temporary_directory/class-summary.txt"
+if grep -q ' getpid$' "$temporary_directory/class-summary.txt"; then
+    echo "excluded syscall appeared in class-filtered summary" >&2
+    exit 1
+fi
+
 set +e
 "$program" -f -e trace=clone,clone3,execve,getpid,wait4 -- \
     "$fixtures/follow_fixture" >"$temporary_directory/follow.out" \
@@ -162,6 +228,22 @@ test ! -s "$temporary_directory/follow.out"
 test "$(grep -c '+++ spawned ' "$temporary_directory/follow.trace")" -ge 2
 test "$(grep -c '] execve(' "$temporary_directory/follow.trace")" -ge 2
 test "$(grep -c '] getpid() = ' "$temporary_directory/follow.trace")" -ge 2
+
+set +e
+"$program" -f -c --format=json -e trace=getpid -- \
+    "$fixtures/follow_fixture" >"$temporary_directory/follow-summary.out" \
+    2>"$temporary_directory/follow-summary.json"
+status=$?
+set -e
+test "$status" -eq 5
+"$validator" "$temporary_directory/follow-summary.json" summary
+grep -Eq '"name":"getpid","calls":"([2-9]|[1-9][0-9]+)"' \
+    "$temporary_directory/follow-summary.json"
+if grep -q '"type":"process-start"' \
+    "$temporary_directory/follow-summary.json"; then
+    echo "lifecycle event leaked into summary output" >&2
+    exit 1
+fi
 
 set +e
 "$program" -f --format=ndjson -e trace=execve,getpid -- \
@@ -277,4 +359,4 @@ wait "$target_pid"
 target_pid=
 test ! -s "$temporary_directory/attach.target.err"
 
-echo "ok launch, follow, attach/detach, syscall, signal, NDJSON, and status behavior"
+echo "ok tracing, signals, filters, NDJSON, summaries, and status behavior"

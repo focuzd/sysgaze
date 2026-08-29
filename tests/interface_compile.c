@@ -5,6 +5,7 @@
 #include "sysgaze/event.h"
 #include "sysgaze/filter.h"
 #include "sysgaze/output.h"
+#include "sysgaze/stats.h"
 #include "sysgaze/syscall_catalog.h"
 #include "sysgaze/tracee.h"
 #include "sysgaze/trace.h"

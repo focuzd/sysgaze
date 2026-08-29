@@ -157,6 +157,11 @@ static enum sg_cli_action validate_config(int argc, char **argv,
                   "--format=json is only valid with -c");
         return SG_CLI_ERROR;
     }
+    if (config->format == SG_FORMAT_NDJSON && config->summary) {
+        set_error(error, error_size,
+                  "--format=ndjson cannot be used with -c; use text or json");
+        return SG_CLI_ERROR;
+    }
     if (config->seccomp_bpf) {
         if (config->mode == SG_RUN_ATTACH) {
             set_error(error, error_size,
@@ -283,7 +288,7 @@ void sg_cli_print_usage(FILE *stream, const char *program_name)
                   "  -s N               maximum displayed string bytes (default 32)\n"
                   "  -o FILE            write tracer output to FILE\n"
                   "  -c                 print aggregate syscall statistics\n"
-                  "      --format=FMT    text, ndjson, or json (json requires -c)\n"
+                  "      --format=FMT    text, ndjson stream, or json summary\n"
                   "      --seccomp-bpf   filtered launch-mode acceleration\n"
                   "  -h, --help         show this help\n"
                   "      --version      show version\n",

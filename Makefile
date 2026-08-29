@@ -13,7 +13,7 @@ TEST_PROGRAM := build/tests/stage1_tests
 NDJSON_VALIDATOR := build/tests/ndjson_validator
 
 CORE_SOURCES := src/buffer.c src/cli.c src/decoder.c src/filter.c src/output.c \
-	src/syscall_catalog.c src/tracee_table.c
+	src/stats.c src/syscall_catalog.c src/tracee_table.c
 TRACE_SOURCES := src/trace.c
 PROGRAM_SOURCES := src/main.c $(CORE_SOURCES) $(TRACE_SOURCES)
 TEST_SOURCES := tests/stage1_tests.c tests/interface_compile.c $(CORE_SOURCES)
@@ -23,6 +23,8 @@ FIXTURE_SOURCES := tests/fixtures/exit_fixture.c tests/fixtures/signal_fixture.c
 	tests/fixtures/follow_fixture.c tests/fixtures/attach_fixture.c \
 	tests/fixtures/signal_state_fixture.c \
 	tests/fixtures/interleave_fixture.c tests/fixtures/fault_fixture.c
+
+FIXTURE_SOURCES += tests/fixtures/summary_fixture.c
 FIXTURES := $(FIXTURE_SOURCES:tests/fixtures/%.c=build/tests/fixtures/%)
 
 PROGRAM_OBJECTS := $(PROGRAM_SOURCES:%.c=build/obj/%.o)
@@ -63,6 +65,12 @@ build/tests/fixtures/interleave_fixture: \
 # This fixture must deliver a real SIGSEGV to the tracer; ASan would intercept
 # its deliberate PROT_NONE read before ptrace can observe the native fault.
 build/tests/fixtures/fault_fixture: tests/fixtures/fault_fixture.c
+	@mkdir -p $(@D)
+	$(CC) $(CPPFLAGS) \
+		$(filter-out -fsanitize=address$(comma)undefined,$(CFLAGS)) $< -o $@
+
+# Exact syscall-count assertions must not include sanitizer runtime syscalls.
+build/tests/fixtures/summary_fixture: tests/fixtures/summary_fixture.c
 	@mkdir -p $(@D)
 	$(CC) $(CPPFLAGS) \
 		$(filter-out -fsanitize=address$(comma)undefined,$(CFLAGS)) $< -o $@

@@ -202,12 +202,15 @@ int main(int argc, char **argv)
     bool saw_getpid = false;
     bool saw_exit = false;
     bool syntax_only;
+    bool summary;
+    bool saw_summary = false;
 
     if (argc != 2 && argc != 3) {
         return 2;
     }
     syntax_only = argc == 3 && strcmp(argv[2], "syntax-only") == 0;
-    if (argc == 3 && !syntax_only) {
+    summary = argc == 3 && strcmp(argv[2], "summary") == 0;
+    if (argc == 3 && !syntax_only && !summary) {
         return 2;
     }
     stream = fopen(argv[1], "r");
@@ -222,12 +225,15 @@ int main(int argc, char **argv)
             line[--amount] = '\0';
         }
         if (!valid_json_line(line) ||
-            strstr(line, "\"schema\":\"sysgaze.trace/v1\"") == NULL) {
+            strstr(line, summary ? "\"schema\":\"sysgaze.summary/v1\""
+                                 : "\"schema\":\"sysgaze.trace/v1\"") ==
+                NULL) {
             free(line);
             (void)fclose(stream);
             return 1;
         }
-        if (line_number > 1U && strstr(line, "\"timestamp_ns\":\"") == NULL) {
+        if (!summary && line_number > 1U &&
+            strstr(line, "\"timestamp_ns\":\"") == NULL) {
             free(line);
             (void)fclose(stream);
             return 1;
@@ -235,6 +241,12 @@ int main(int argc, char **argv)
         if (line_number == 1U &&
             strstr(line, "\"type\":\"metadata\"") != NULL) {
             saw_metadata = true;
+        }
+        if (line_number == 1U &&
+            strstr(line, "\"type\":\"summary\"") != NULL &&
+            strstr(line, "\"total_calls\":\"") != NULL &&
+            strstr(line, "\"syscalls\":[") != NULL) {
+            saw_summary = true;
         }
         if (strstr(line, "\"type\":\"syscall\"") != NULL &&
             strstr(line, "\"number\":\"39\"") != NULL &&
@@ -251,6 +263,9 @@ int main(int argc, char **argv)
     free(line);
     if (ferror(stream) != 0 || fclose(stream) != 0) {
         return 2;
+    }
+    if (summary) {
+        return line_number == 1U && saw_summary ? 0 : 1;
     }
     return saw_metadata && line_number > 1U &&
                    (syntax_only || (saw_getpid && saw_exit))
