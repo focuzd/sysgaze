@@ -19,6 +19,8 @@ enum { DEFAULT_WARMUPS = 5, DEFAULT_ITERATIONS = 30, MAX_ITERATIONS = 1000 };
 
 struct workload {
     const char *name;
+    const char *argument;
+    const char *workers;
     bool follow;
     uint64_t filtered_events;
 };
@@ -29,6 +31,7 @@ struct runner {
     const char *name;
     enum runner_kind kind;
     bool filtered;
+    bool seccomp;
 };
 
 struct sample {
@@ -39,10 +42,10 @@ struct sample {
 };
 
 static const struct workload workloads[] = {
-    {"syscall", false, 2000U},
-    {"file", false, 200U},
-    {"process", true, 800U},
-    {"thread", true, 800U}
+    {"syscall", "syscall", NULL, false, 2000U},
+    {"file", "file", NULL, false, 200U},
+    {"process", "process", NULL, true, 800U},
+    {"thread", "thread", NULL, true, 800U}
 };
 
 static int configured_count(const char *name, int fallback)
@@ -174,7 +177,8 @@ static void execute_runner(const struct runner *runner,
     redirect_to_null(STDERR_FILENO, O_WRONLY);
     if (runner->kind == RUN_NATIVE) {
         char *native_arguments[] = {
-            (char *)workload_program, (char *)workload->name, NULL
+            (char *)workload_program, (char *)workload->argument,
+            (char *)workload->workers, NULL
         };
         execve(workload_program, native_arguments, environ);
         _exit(127);
@@ -183,6 +187,9 @@ static void execute_runner(const struct runner *runner,
     arguments[used++] = (char *)(runner->kind == RUN_SYSGAZE ? sysgaze : strace);
     if (workload->follow) {
         arguments[used++] = (char *)"-f";
+    }
+    if (runner->seccomp) {
+        arguments[used++] = (char *)"--seccomp-bpf";
     }
     if (runner->kind == RUN_STRACE) {
         arguments[used++] = (char *)"-qq";
@@ -195,7 +202,10 @@ static void execute_runner(const struct runner *runner,
     }
     arguments[used++] = (char *)"--";
     arguments[used++] = (char *)workload_program;
-    arguments[used++] = (char *)workload->name;
+    arguments[used++] = (char *)workload->argument;
+    if (workload->workers != NULL) {
+        arguments[used++] = (char *)workload->workers;
+    }
     arguments[used] = NULL;
 
     if (runner->kind == RUN_SYSGAZE) {
@@ -340,7 +350,8 @@ static bool benchmark_runner(const struct runner *runner,
                              const char *sysgaze, const char *workload_program,
                              const char *strace, const char *output_path,
                              int warmups, int iterations, double native_median,
-                             double *reported_median)
+                             double *reported_median,
+                             uint64_t *reported_ptrace_calls)
 {
     struct sample *samples;
     double minimum;
@@ -409,31 +420,86 @@ static bool benchmark_runner(const struct runner *runner,
         (void)printf(" %12s\n", "-");
     }
     *reported_median = wall_median;
+    *reported_ptrace_calls = ptrace_calls;
+    return true;
+}
+
+static void print_header(int warmups, int iterations)
+{
+    (void)printf("warmups=%d iterations=%d filter=trace=getpid\n", warmups,
+                 iterations);
+    (void)printf("%-8s %-18s %9s %9s %9s %9s %9s %10s %12s\n",
+                 "workload", "mode", "median", "min", "max", "cpu-ms",
+                 "overhead", "events", "ptrace-calls");
+}
+
+static bool run_workload(const struct workload *workload,
+                         const struct runner *runners, size_t runner_count,
+                         const char *sysgaze, const char *workload_program,
+                         const char *strace, const char *output_path,
+                         int warmups, int iterations)
+{
+    double native_median = 0.0;
+    uint64_t filtered_ptrace_calls = 0U;
+    size_t runner_index;
+
+    for (runner_index = 0U; runner_index < runner_count; ++runner_index) {
+        double median;
+        uint64_t ptrace_calls;
+
+        if (!benchmark_runner(&runners[runner_index], workload, sysgaze,
+                              workload_program, strace, output_path, warmups,
+                              iterations, native_median, &median,
+                              &ptrace_calls)) {
+            (void)fprintf(stderr, "benchmark failed for %s/%s\n",
+                          workload->name, runners[runner_index].name);
+            return false;
+        }
+        if (runner_index == 0U) {
+            native_median = median;
+        }
+        if (runners[runner_index].kind == RUN_SYSGAZE &&
+            runners[runner_index].filtered && !runners[runner_index].seccomp) {
+            filtered_ptrace_calls = ptrace_calls;
+        }
+        if (runners[runner_index].seccomp && filtered_ptrace_calls != 0U &&
+            ptrace_calls >= filtered_ptrace_calls) {
+            (void)fprintf(stderr,
+                          "%s seccomp path did not reduce ptrace calls "
+                          "(%" PRIu64 " >= %" PRIu64 ")\n",
+                          workload->name, ptrace_calls,
+                          filtered_ptrace_calls);
+            return false;
+        }
+    }
     return true;
 }
 
 int main(int argc, char **argv)
 {
-    struct runner runners[5] = {
-        {"native", RUN_NATIVE, false},
-        {"sysgaze", RUN_SYSGAZE, false},
-        {"sysgaze-filtered", RUN_SYSGAZE, true},
-        {"strace", RUN_STRACE, false},
-        {"strace-filtered", RUN_STRACE, true}
+    static const struct runner runners[] = {
+        {"native", RUN_NATIVE, false, false},
+        {"sysgaze", RUN_SYSGAZE, false, false},
+        {"sysgaze-filtered", RUN_SYSGAZE, true, false},
+        {"sysgaze-seccomp", RUN_SYSGAZE, true, true},
+        {"strace", RUN_STRACE, false, false},
+        {"strace-filtered", RUN_STRACE, true, false}
     };
+    static const int scaling_workers[] = {1, 2, 4, 8, 16};
+    static const char *const scaling_types[] = {"process", "thread"};
     char output_path[] = "/tmp/sysgaze-bench-XXXXXX";
     int warmups = configured_count("SYSGAZE_BENCH_WARMUPS", DEFAULT_WARMUPS);
     int iterations = configured_count("SYSGAZE_BENCH_ITERATIONS",
                                       DEFAULT_ITERATIONS);
+    bool scaling = getenv("SYSGAZE_BENCH_SCALING") != NULL;
     size_t runner_count;
-    size_t workload_index;
     int descriptor;
 
     if (argc != 3 && argc != 4) {
         (void)fprintf(stderr, "usage: %s SYSGAZE WORKLOAD [STRACE]\n", argv[0]);
         return 2;
     }
-    runner_count = argc == 4 ? 5U : 3U;
+    runner_count = scaling ? 4U : argc == 4 ? 6U : 4U;
     descriptor = mkstemp(output_path);
     if (descriptor < 0 || close(descriptor) < 0) {
         (void)fprintf(stderr, "cannot create benchmark output: %s\n",
@@ -441,31 +507,52 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    (void)printf("warmups=%d iterations=%d filter=trace=getpid\n", warmups,
-                 iterations);
-    (void)printf("%-8s %-18s %9s %9s %9s %9s %9s %10s %12s\n",
-                 "workload", "mode", "median", "min", "max", "cpu-ms",
-                 "overhead", "events", "ptrace-calls");
-    for (workload_index = 0U;
-         workload_index < sizeof(workloads) / sizeof(workloads[0]);
-         ++workload_index) {
-        double native_median = 0.0;
-        size_t runner_index;
+    print_header(warmups, iterations);
+    if (scaling) {
+        size_t type_index;
 
-        for (runner_index = 0U; runner_index < runner_count; ++runner_index) {
-            double median;
-            if (!benchmark_runner(&runners[runner_index],
-                                  &workloads[workload_index], argv[1], argv[2],
-                                  argc == 4 ? argv[3] : NULL, output_path,
-                                  warmups, iterations, native_median, &median)) {
-                (void)fprintf(stderr, "benchmark failed for %s/%s\n",
-                              workloads[workload_index].name,
-                              runners[runner_index].name);
+        for (type_index = 0U;
+             type_index < sizeof(scaling_types) / sizeof(scaling_types[0]);
+             ++type_index) {
+            size_t worker_index;
+
+            for (worker_index = 0U;
+                 worker_index < sizeof(scaling_workers) /
+                                    sizeof(scaling_workers[0]);
+                 ++worker_index) {
+                char label[32];
+                char worker_text[8];
+                int workers = scaling_workers[worker_index];
+                struct workload scaled;
+
+                (void)snprintf(label, sizeof(label), "%s-%d",
+                               scaling_types[type_index], workers);
+                (void)snprintf(worker_text, sizeof(worker_text), "%d", workers);
+                scaled.name = label;
+                scaled.argument = scaling_types[type_index];
+                scaled.workers = worker_text;
+                scaled.follow = true;
+                scaled.filtered_events = (uint64_t)(unsigned int)workers * 100U;
+                if (!run_workload(&scaled, runners, runner_count, argv[1],
+                                  argv[2], NULL, output_path, warmups,
+                                  iterations)) {
+                    (void)unlink(output_path);
+                    return 1;
+                }
+            }
+        }
+    } else {
+        size_t workload_index;
+
+        for (workload_index = 0U;
+             workload_index < sizeof(workloads) / sizeof(workloads[0]);
+             ++workload_index) {
+            if (!run_workload(&workloads[workload_index], runners,
+                              runner_count, argv[1], argv[2],
+                              argc == 4 ? argv[3] : NULL, output_path, warmups,
+                              iterations)) {
                 (void)unlink(output_path);
                 return 1;
-            }
-            if (runner_index == 0U) {
-                native_median = median;
             }
         }
     }

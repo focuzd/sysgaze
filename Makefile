@@ -32,7 +32,8 @@ FIXTURES := $(FIXTURE_SOURCES:tests/fixtures/%.c=build/tests/fixtures/%)
 PROGRAM_OBJECTS := $(PROGRAM_SOURCES:%.c=build/obj/%.o)
 TEST_OBJECTS := $(TEST_SOURCES:%.c=build/obj/%.test.o)
 
-.PHONY: all test check bench bench-compare bench-smoke update-syscalls clean
+.PHONY: all test check bench bench-compare bench-scaling bench-smoke \
+	update-syscalls clean
 
 all: $(PROGRAM)
 
@@ -102,6 +103,10 @@ bench: $(PROGRAM) $(BENCH_HARNESS) $(BENCH_WORKLOAD)
 bench-compare: $(PROGRAM) $(BENCH_HARNESS) $(BENCH_WORKLOAD)
 	@command -v strace >/dev/null || { echo "strace is not installed" >&2; exit 1; }
 	./$(BENCH_HARNESS) ./$(PROGRAM) ./$(BENCH_WORKLOAD) "$$(command -v strace)"
+
+bench-scaling: $(PROGRAM) $(BENCH_HARNESS) $(BENCH_WORKLOAD)
+	SYSGAZE_BENCH_SCALING=1 \
+		./$(BENCH_HARNESS) ./$(PROGRAM) ./$(BENCH_WORKLOAD)
 
 bench-smoke: $(PROGRAM) $(BENCH_HARNESS) $(BENCH_WORKLOAD)
 	SYSGAZE_BENCH_WARMUPS=1 SYSGAZE_BENCH_ITERATIONS=1 \

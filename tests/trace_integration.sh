@@ -194,6 +194,50 @@ grep -q '"name":"write","calls":"2","errors":"1"' \
 grep -q '"average_nanoseconds":"[0-9][0-9]*","percent":"[0-9][0-9]*\.[0-9][0-9]"' \
     "$temporary_directory/summary.json"
 
+"$program" --seccomp-bpf -c --format=json -e trace=getpid,write -- \
+    "$fixtures/summary_fixture" >"$temporary_directory/seccomp-summary.out" \
+    2>"$temporary_directory/seccomp-summary.json"
+test ! -s "$temporary_directory/seccomp-summary.out"
+"$validator" "$temporary_directory/seccomp-summary.json" summary
+grep -q '"total_calls":"5".*"total_errors":"1"' \
+    "$temporary_directory/seccomp-summary.json"
+grep -q '"name":"getpid","calls":"3","errors":"0"' \
+    "$temporary_directory/seccomp-summary.json"
+grep -q '"name":"write","calls":"2","errors":"1"' \
+    "$temporary_directory/seccomp-summary.json"
+
+"$program" --seccomp-bpf --format=ndjson -e trace=getpid -- \
+    "$fixtures/summary_fixture" >"$temporary_directory/seccomp-ndjson.out" \
+    2>"$temporary_directory/seccomp.ndjson"
+"$validator" "$temporary_directory/seccomp.ndjson" syntax-only
+test "$(grep -c '"type":"syscall"' \
+    "$temporary_directory/seccomp.ndjson")" -eq 3
+if grep -q '"name":"write"' "$temporary_directory/seccomp.ndjson"; then
+    echo "unselected syscall leaked from seccomp fast path" >&2
+    exit 1
+fi
+
+"$program" --seccomp-bpf -e trace=read -- "$fixtures/restart_fixture" \
+    >"$temporary_directory/seccomp-restart.out" \
+    2>"$temporary_directory/seccomp-restart.trace"
+grep -Eq '^(read\(.*\)|<\.\.\. read resumed>\)) = 1$' \
+    "$temporary_directory/seccomp-restart.trace"
+if grep -Eq 'errno\((512|513|514|516)\)' \
+    "$temporary_directory/seccomp-restart.trace"; then
+    echo "restart pseudo-error leaked from seccomp fast path" >&2
+    exit 1
+fi
+
+set +e
+"$program" --seccomp-bpf -e trace=mmap -- "$fixtures/fault_fixture" \
+    >"$temporary_directory/seccomp-fault.out" \
+    2>"$temporary_directory/seccomp-fault.trace"
+status=$?
+set -e
+test "$status" -eq 139
+grep -Eq '^--- SIGSEGV .*si_addr=0x[0-9a-f]+' \
+    "$temporary_directory/seccomp-fault.trace"
+
 "$program" -c -e trace=getpid,!getpid -- "$fixtures/summary_fixture" \
     >"$temporary_directory/empty-summary.out" \
     2>"$temporary_directory/empty-summary.txt"
@@ -244,6 +288,21 @@ if grep -q '"type":"process-start"' \
     echo "lifecycle event leaked into summary output" >&2
     exit 1
 fi
+
+set +e
+"$program" -f --seccomp-bpf -c --format=json \
+    -e trace=clone,clone3,execve,getpid,wait4 -- \
+    "$fixtures/follow_fixture" \
+    >"$temporary_directory/seccomp-follow-summary.out" \
+    2>"$temporary_directory/seccomp-follow-summary.json"
+status=$?
+set -e
+test "$status" -eq 5
+"$validator" "$temporary_directory/seccomp-follow-summary.json" summary
+grep -Eq '"name":"getpid","calls":"([2-9]|[1-9][0-9]+)"' \
+    "$temporary_directory/seccomp-follow-summary.json"
+grep -q '"name":"execve","calls":"' \
+    "$temporary_directory/seccomp-follow-summary.json"
 
 set +e
 "$program" -f --format=ndjson -e trace=execve,getpid -- \

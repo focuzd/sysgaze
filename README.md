@@ -13,6 +13,7 @@ make
 ./build/sysgaze -p PID
 ./build/sysgaze -c -e trace=%file -- command arg
 ./build/sysgaze -c --format=json -- command arg
+./build/sysgaze --seccomp-bpf -e trace=getpid -- command arg
 ```
 
 The NDJSON stream uses schema `sysgaze.trace/v1`. It begins with a metadata
@@ -41,20 +42,25 @@ completed selected syscall events, and tracer-side ptrace calls.
 ```sh
 make bench
 make bench-compare   # also run matched unfiltered/filtered system strace modes
+make bench-scaling   # process/thread fanout at 1, 2, 4, 8, and 16 workers
 ```
 
 The filtered case selects `getpid`, whose expected count is checked on every
 measured run. This makes the output-normalization gate independent of dynamic
 loader and thread-scheduling noise. Ordinary ptrace filtering still stops on
 every syscall; it saves decoding and output work, but does not reduce ptrace
-traffic. Stage 8's opt-in seccomp-BPF path is intended to change that.
+traffic. `--seccomp-bpf` installs a raw classic BPF filter and uses
+`PTRACE_EVENT_SECCOMP` so unselected calls run without ptrace stops. It is
+launch-only, requires a non-empty filter, and never silently falls back to the
+ordinary tracing path.
 
 The harness is itself C and uses `fork`, `execve`, `wait4`,
 `clock_gettime(CLOCK_MONOTONIC)`, and `getrusage`. It does not invoke shell
 timing or text-processing utilities. Set `SYSGAZE_BENCH_WARMUPS` and
 `SYSGAZE_BENCH_ITERATIONS` only when a shorter diagnostic run is needed; the
 published default remains 5/30. See [benchmarks/README.md](benchmarks/README.md)
-for metric definitions and interpretation.
+for metric definitions and interpretation. The recorded Stage 8 run is in
+[benchmarks/results-2026-08-29-seccomp.txt](benchmarks/results-2026-08-29-seccomp.txt).
 
 ## Shutdown behavior
 

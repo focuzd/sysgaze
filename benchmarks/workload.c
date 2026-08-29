@@ -12,7 +12,8 @@
 enum {
     SYSCALL_ITERATIONS = 2000,
     FILE_ITERATIONS = 200,
-    FANOUT_WORKERS = 8,
+    DEFAULT_FANOUT_WORKERS = 8,
+    MAX_FANOUT_WORKERS = 16,
     FANOUT_ITERATIONS = 100
 };
 
@@ -51,12 +52,12 @@ static int file_workload(void)
     return 0;
 }
 
-static int process_workload(void)
+static int process_workload(int workers)
 {
-    pid_t children[FANOUT_WORKERS];
+    pid_t children[MAX_FANOUT_WORKERS];
     int worker;
 
-    for (worker = 0; worker < FANOUT_WORKERS; ++worker) {
+    for (worker = 0; worker < workers; ++worker) {
         pid_t child = fork();
 
         if (child < 0) {
@@ -72,7 +73,7 @@ static int process_workload(void)
         }
         children[worker] = child;
     }
-    for (worker = 0; worker < FANOUT_WORKERS; ++worker) {
+    for (worker = 0; worker < workers; ++worker) {
         int status;
 
         if (waitpid(children[worker], &status, 0) != children[worker] ||
@@ -94,12 +95,12 @@ static void *thread_worker(void *opaque)
     return NULL;
 }
 
-static int thread_workload(void)
+static int thread_workload(int workers)
 {
-    pthread_t threads[FANOUT_WORKERS];
+    pthread_t threads[MAX_FANOUT_WORKERS];
     int worker;
 
-    for (worker = 0; worker < FANOUT_WORKERS; ++worker) {
+    for (worker = 0; worker < workers; ++worker) {
         int result = pthread_create(&threads[worker], NULL, thread_worker, NULL);
 
         if (result != 0) {
@@ -107,7 +108,7 @@ static int thread_workload(void)
             return 1;
         }
     }
-    for (worker = 0; worker < FANOUT_WORKERS; ++worker) {
+    for (worker = 0; worker < workers; ++worker) {
         int result = pthread_join(threads[worker], NULL);
 
         if (result != 0) {
@@ -120,9 +121,27 @@ static int thread_workload(void)
 
 int main(int argc, char **argv)
 {
-    if (argc != 2) {
-        (void)fprintf(stderr, "usage: %s syscall|file|process|thread\n", argv[0]);
+    int workers = DEFAULT_FANOUT_WORKERS;
+
+    if (argc != 2 && argc != 3) {
+        (void)fprintf(stderr,
+                      "usage: %s syscall|file|process|thread [workers]\n",
+                      argv[0]);
         return 2;
+    }
+    if (argc == 3) {
+        char *end = NULL;
+        long value;
+
+        errno = 0;
+        value = strtol(argv[2], &end, 10);
+        if (errno != 0 || end == argv[2] || *end != '\0' || value < 1 ||
+            value > MAX_FANOUT_WORKERS) {
+            (void)fprintf(stderr, "workers must be between 1 and %d\n",
+                          MAX_FANOUT_WORKERS);
+            return 2;
+        }
+        workers = (int)value;
     }
     if (strcmp(argv[1], "syscall") == 0) {
         return syscall_workload();
@@ -131,10 +150,10 @@ int main(int argc, char **argv)
         return file_workload();
     }
     if (strcmp(argv[1], "process") == 0) {
-        return process_workload();
+        return process_workload(workers);
     }
     if (strcmp(argv[1], "thread") == 0) {
-        return thread_workload();
+        return thread_workload(workers);
     }
     (void)fprintf(stderr, "unknown workload '%s'\n", argv[1]);
     return 2;

@@ -7,6 +7,7 @@
 #include <inttypes.h>
 #include <limits.h>
 #include <linux/audit.h>
+#include <linux/filter.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -15,6 +16,8 @@
 #include <string.h>
 #include <sys/ptrace.h>
 #include <linux/ptrace.h>
+#include <linux/seccomp.h>
+#include <sys/prctl.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/uio.h>
@@ -37,6 +40,14 @@
 #define SG_RESTART_NOINTR 513
 #define SG_RESTART_NOHAND 514
 #define SG_RESTART_RESTARTBLOCK 516
+#define SG_X32_SYSCALL_BIT UINT32_C(0x40000000)
+#define SG_SECCOMP_BAD_ARCH UINT32_C(1)
+#define SG_SECCOMP_BAD_ABI UINT32_C(2)
+
+struct seccomp_program {
+    struct sock_filter *instructions;
+    struct sock_fprog program;
+};
 
 struct trace_context {
     const struct sg_config *config;
@@ -48,6 +59,7 @@ struct trace_context {
     pid_t root_tid;
     int root_status;
     bool root_status_known;
+    bool root_exec_observed;
     bool show_tids;
     uint64_t event_count;
 };
@@ -56,6 +68,7 @@ static volatile sig_atomic_t shutdown_signal;
 static uint64_t ptrace_call_count;
 
 static void set_error(char *error, size_t error_size, const char *format, ...);
+static void child_fail(const char *operation, const char *subject);
 
 static long measured_ptrace(enum __ptrace_request request, pid_t pid,
                             void *address, void *data)
@@ -112,12 +125,101 @@ static bool validate_runtime_options(const struct sg_config *config,
                   "JSON event output is not supported; use NDJSON");
         return false;
     }
-    if (config->seccomp_bpf) {
-        set_error(error, error_size,
-                  "seccomp-BPF mode is not implemented until Stage 8");
+    return true;
+}
+
+static void append_bpf(struct seccomp_program *filter, uint16_t code,
+                       uint8_t jump_true, uint8_t jump_false, uint32_t value)
+{
+    size_t index = filter->program.len;
+
+    filter->instructions[index].code = code;
+    filter->instructions[index].jt = jump_true;
+    filter->instructions[index].jf = jump_false;
+    filter->instructions[index].k = value;
+    filter->program.len = (unsigned short)(index + 1U);
+}
+
+static bool prepare_seccomp_program(const struct sg_filter *selection,
+                                    struct seccomp_program *filter,
+                                    char *error, size_t error_size)
+{
+    size_t selected_count = sg_filter_count(selection);
+    size_t capacity;
+    long number;
+
+    memset(filter, 0, sizeof(*filter));
+    if (!sg_filter_contains(selection, SYS_rt_sigreturn)) {
+        ++selected_count;
+    }
+    if (selected_count > (SIZE_MAX - 7U) / 2U) {
+        set_error(error, error_size, "seccomp filter is too large");
         return false;
     }
+    capacity = 7U + selected_count * 2U;
+    if (capacity > USHRT_MAX) {
+        set_error(error, error_size, "seccomp filter exceeds kernel limits");
+        return false;
+    }
+    filter->instructions = calloc(capacity, sizeof(*filter->instructions));
+    if (filter->instructions == NULL) {
+        set_error(error, error_size, "cannot allocate seccomp filter");
+        return false;
+    }
+    filter->program.filter = filter->instructions;
+
+    append_bpf(filter, (uint16_t)(BPF_LD | BPF_W | BPF_ABS), 0U, 0U,
+               (uint32_t)offsetof(struct seccomp_data, arch));
+    append_bpf(filter, (uint16_t)(BPF_JMP | BPF_JEQ | BPF_K), 1U, 0U,
+               AUDIT_ARCH_X86_64);
+    append_bpf(filter, (uint16_t)(BPF_RET | BPF_K), 0U, 0U,
+               SECCOMP_RET_TRACE | SG_SECCOMP_BAD_ARCH);
+    append_bpf(filter, (uint16_t)(BPF_LD | BPF_W | BPF_ABS), 0U, 0U,
+               (uint32_t)offsetof(struct seccomp_data, nr));
+    append_bpf(filter, (uint16_t)(BPF_JMP | BPF_JGE | BPF_K), 0U, 1U,
+               SG_X32_SYSCALL_BIT);
+    append_bpf(filter, (uint16_t)(BPF_RET | BPF_K), 0U, 0U,
+               SECCOMP_RET_TRACE | SG_SECCOMP_BAD_ABI);
+    for (number = 0; (unsigned long)number < SG_SYSCALL_LIMIT; ++number) {
+        if (!sg_filter_contains(selection, number) &&
+            number != SYS_rt_sigreturn) {
+            continue;
+        }
+        append_bpf(filter, (uint16_t)(BPF_JMP | BPF_JEQ | BPF_K), 0U, 1U,
+                   (uint32_t)number);
+        append_bpf(filter, (uint16_t)(BPF_RET | BPF_K), 0U, 0U,
+                   SECCOMP_RET_TRACE);
+    }
+    append_bpf(filter, (uint16_t)(BPF_RET | BPF_K), 0U, 0U,
+               SECCOMP_RET_ALLOW);
     return true;
+}
+
+static void release_seccomp_program(struct seccomp_program *filter)
+{
+    free(filter->instructions);
+    memset(filter, 0, sizeof(*filter));
+}
+
+static void install_seccomp_program(const struct seccomp_program *filter)
+{
+    if (prctl(PR_SET_NO_NEW_PRIVS, 1UL, 0UL, 0UL, 0UL) < 0) {
+        int saved_errno = errno;
+
+        (void)dprintf(STDERR_FILENO,
+                      "sysgaze: child PR_SET_NO_NEW_PRIVS failed: %s\n",
+                      strerror(saved_errno));
+        _exit(126);
+    }
+    if (syscall(SYS_seccomp, SECCOMP_SET_MODE_FILTER, 0U,
+                &filter->program) < 0) {
+        int saved_errno = errno;
+
+        (void)dprintf(STDERR_FILENO,
+                      "sysgaze: child seccomp-BPF installation failed: %s\n",
+                      strerror(saved_errno));
+        _exit(126);
+    }
 }
 
 static FILE *open_output(const char *path, char *error, size_t error_size)
@@ -159,12 +261,22 @@ static void child_fail(const char *operation, const char *subject)
     _exit(127);
 }
 
-static pid_t launch_tracee(char *const command_argv[], char *error,
+static pid_t launch_tracee(const struct sg_config *config, char *error,
                            size_t error_size)
 {
-    pid_t child = fork();
+    struct seccomp_program seccomp_filter = {0};
+    pid_t child;
+
+    if (config->seccomp_bpf &&
+        !prepare_seccomp_program(&config->filter, &seccomp_filter, error,
+                                 error_size)) {
+        return -1;
+    }
+
+    child = fork();
 
     if (child < 0) {
+        release_seccomp_program(&seccomp_filter);
         set_error(error, error_size, "fork failed: %s", strerror(errno));
         return -1;
     }
@@ -175,9 +287,13 @@ static pid_t launch_tracee(char *const command_argv[], char *error,
         if (raise(SIGSTOP) != 0) {
             child_fail("synchronization stop", NULL);
         }
-        execvp(command_argv[0], command_argv);
-        child_fail("execvp", command_argv[0]);
+        if (config->seccomp_bpf) {
+            install_seccomp_program(&seccomp_filter);
+        }
+        execvp(config->command_argv[0], config->command_argv);
+        child_fail("execvp", config->command_argv[0]);
     }
+    release_seccomp_program(&seccomp_filter);
     return child;
 }
 
@@ -214,6 +330,9 @@ static unsigned long ptrace_options(const struct sg_config *config,
         options |= PTRACE_O_TRACEFORK | PTRACE_O_TRACEVFORK |
                    PTRACE_O_TRACECLONE;
     }
+    if (config->seccomp_bpf) {
+        options |= PTRACE_O_TRACESECCOMP;
+    }
     return options;
 }
 
@@ -232,13 +351,20 @@ static bool install_ptrace_options(pid_t child,
     return true;
 }
 
-static bool resume_tracee(pid_t tid, int signal_number,
+static bool resume_tracee(const struct trace_context *context,
+                          const struct sg_tracee *tracee, int signal_number,
                           char *error, size_t error_size)
 {
-    if (measured_ptrace(PTRACE_SYSCALL, tid, NULL,
+    enum __ptrace_request request = PTRACE_SYSCALL;
+
+    if (context->config->seccomp_bpf && !tracee->has_pending_syscall) {
+        request = PTRACE_CONT;
+    }
+    if (measured_ptrace(request, tracee->tid, NULL,
                         (void *)(uintptr_t)(unsigned int)signal_number) < 0) {
-        set_error(error, error_size, "PTRACE_SYSCALL for %ld failed: %s",
-                  (long)tid, strerror(errno));
+        set_error(error, error_size, "%s for %ld failed: %s",
+                  request == PTRACE_SYSCALL ? "PTRACE_SYSCALL" : "PTRACE_CONT",
+                  (long)tracee->tid, strerror(errno));
         return false;
     }
     return true;
@@ -448,11 +574,11 @@ static bool write_exit(struct trace_context *context,
 
 static bool begin_syscall(struct trace_context *context,
                           struct sg_tracee *tracee,
-                          const struct ptrace_syscall_info *info,
+                          uint64_t number,
+                          const __u64 arguments[6],
                           char *error, size_t error_size)
 {
     struct sg_syscall_event event = {0};
-    uint64_t number = info->entry.nr;
     size_t index;
 
     if (number > (uint64_t)LONG_MAX) {
@@ -529,7 +655,7 @@ static bool begin_syscall(struct trace_context *context,
 
     event.number = (long)number;
     for (index = 0U; index < 6U; ++index) {
-        event.arguments[index] = info->entry.args[index];
+        event.arguments[index] = arguments[index];
     }
     if (selected(context, event.number) &&
         clock_gettime(CLOCK_MONOTONIC, &event.entered_at) < 0) {
@@ -646,7 +772,8 @@ static bool handle_syscall_stop(struct trace_context *context,
                       "PTRACE_GET_SYSCALL_INFO returned a truncated entry");
             return false;
         }
-        return begin_syscall(context, tracee, &info, error, error_size);
+        return begin_syscall(context, tracee, info.entry.nr, info.entry.args,
+                             error, error_size);
     }
     if (info.op == PTRACE_SYSCALL_INFO_EXIT) {
         if ((size_t)result <
@@ -661,6 +788,47 @@ static bool handle_syscall_stop(struct trace_context *context,
     set_error(error, error_size, "unexpected syscall-stop operation %u",
               (unsigned int)info.op);
     return false;
+}
+
+static bool handle_seccomp_stop(struct trace_context *context,
+                                struct sg_tracee *tracee,
+                                char *error, size_t error_size)
+{
+    struct ptrace_syscall_info info = {0};
+    long result;
+
+    result = measured_ptrace(PTRACE_GET_SYSCALL_INFO, tracee->tid,
+                             (void *)(uintptr_t)sizeof(info), &info);
+    if (result < 0) {
+        set_error(error, error_size,
+                  "PTRACE_GET_SYSCALL_INFO at seccomp stop failed: %s",
+                  strerror(errno));
+        return false;
+    }
+    if ((size_t)result < offsetof(struct ptrace_syscall_info, seccomp.args) +
+                             sizeof(info.seccomp.args)) {
+        set_error(error, error_size,
+                  "PTRACE_GET_SYSCALL_INFO returned truncated seccomp data");
+        return false;
+    }
+    if (info.arch != AUDIT_ARCH_X86_64) {
+        set_error(error, error_size,
+                  "seccomp tracee ABI is not native x86-64 (audit arch 0x%x)",
+                  info.arch);
+        return false;
+    }
+    if (info.op != PTRACE_SYSCALL_INFO_SECCOMP) {
+        set_error(error, error_size,
+                  "unexpected seccomp-stop operation %u",
+                  (unsigned int)info.op);
+        return false;
+    }
+    if ((info.seccomp.nr & SG_X32_SYSCALL_BIT) != 0U) {
+        set_error(error, error_size, "x32 syscall ABI is not supported");
+        return false;
+    }
+    return begin_syscall(context, tracee, info.seccomp.nr, info.seccomp.args,
+                         error, error_size);
 }
 
 static void release_tracee(struct sg_tracee *tracee)
@@ -956,7 +1124,13 @@ static bool handle_ptrace_event(struct trace_context *context,
 {
     unsigned long message = 0UL;
 
+    if (event == PTRACE_EVENT_SECCOMP) {
+        return handle_seccomp_stop(context, tracee, error, error_size);
+    }
     if (event == PTRACE_EVENT_EXEC) {
+        if (tracee->tid == context->root_tid) {
+            context->root_exec_observed = true;
+        }
         if (tracee->has_pending_syscall) {
             tracee->pending_syscall.result = 0;
             tracee->pending_syscall.error_number = 0;
@@ -1217,7 +1391,7 @@ static bool trace_loop(struct trace_context *context, int *command_status,
             sg_tracee_table_get(&context->tracees, context->root_tid);
 
         if (root == NULL ||
-            !resume_tracee(root->tid, 0, error, error_size)) {
+            !resume_tracee(context, root, 0, error, error_size)) {
             return false;
         }
         root->in_ptrace_stop = false;
@@ -1290,6 +1464,13 @@ static bool trace_loop(struct trace_context *context, int *command_status,
             struct sg_tracee removed;
 
             tracee->phase = SG_TRACEE_GONE;
+            if (context->config->seccomp_bpf && waited == context->root_tid &&
+                !context->root_exec_observed && WIFEXITED(status) &&
+                WEXITSTATUS(status) == 126) {
+                set_error(error, error_size,
+                          "seccomp-BPF setup failed before command execution");
+                return false;
+            }
             if (!write_exit(context, tracee, status, error, error_size)) {
                 return false;
             }
@@ -1356,8 +1537,8 @@ static bool trace_loop(struct trace_context *context, int *command_status,
                 continue;
             }
             if (listen ? !listen_tracee(waited, error, error_size)
-                       : !resume_tracee(waited, delivery_signal, error,
-                                       error_size)) {
+                       : !resume_tracee(context, tracee, delivery_signal,
+                                       error, error_size)) {
                 if (errno == ESRCH) {
                     continue;
                 }
@@ -1419,7 +1600,7 @@ bool sg_trace_run(const struct sg_config *config, int *command_status,
     }
 
     if (config->mode == SG_RUN_LAUNCH) {
-        pid_t child = launch_tracee(config->command_argv, error, error_size);
+        pid_t child = launch_tracee(config, error, error_size);
 
         success = child >= 0;
         if (success) {

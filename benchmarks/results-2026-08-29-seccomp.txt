@@ -1,0 +1,47 @@
+Sysgaze Stage 8 seccomp-BPF benchmark — 2026-08-29 UTC
+
+Host:
+  Linux 7.0.0-30-generic x86_64
+  Intel Core i3-1005G1, 2 cores / 4 logical CPUs
+  GCC 15.2.0
+
+Method:
+  5 warmups, 30 measured iterations, filter=trace=getpid.
+  Times are median wall milliseconds. Ptrace counts are median tracer-side API
+  calls. Every filtered and seccomp sample passed its exact event-count gate.
+
+Default workloads:
+  workload  native  ordinary-filter  seccomp-filter  ordinary-ptrace  seccomp-ptrace
+  syscall    0.846       26.362          25.929            8126            8004
+  file       1.245       17.300           4.831            5726             804
+  process    0.985        9.297           8.727            3602            3244
+  thread     0.696        9.374           8.499            3722            3228
+
+Relative to ordinary filtering:
+  workload  median wall change  ptrace-call change
+  syscall          -1.6%               -1.5%
+  file            -72.1%              -86.0%
+  process          -6.1%               -9.9%
+  thread           -9.3%              -13.3%
+
+Process scaling:
+  workers  native  ordinary-filter  seccomp-filter  ordinary-ptrace  seccomp-ptrace
+     1      0.652        3.430           3.079             557             409
+     2      0.596        3.550           3.043             988             814
+     4      0.721        5.458           4.966            1862            1624
+     8      0.956        9.378           8.717            3602            3244
+    16      1.430       18.420          17.384            7082            6484
+
+Thread scaling:
+  workers  native  ordinary-filter  seccomp-filter  ordinary-ptrace  seccomp-ptrace
+     1      0.499        3.445           2.979             591             407
+     2      0.523        3.554           2.968            1040             810
+     4      0.567        5.412           4.795            1926            1616
+     8      0.694        9.370           8.552            3722            3228
+    16      0.909       18.150          16.787            7314            6452
+
+Interpretation:
+  Seccomp has little room to help when nearly every call is selected, as in the
+  syscall-heavy workload. It is most effective when selected calls are sparse.
+  The filter is inherited by forked processes and threads, and its advantage
+  remains measurable at 16 workers. No single-run performance claim is used.
