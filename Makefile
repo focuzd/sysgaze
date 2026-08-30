@@ -7,6 +7,9 @@ CFLAGS := -std=c23 -O2 -g -Wall -Wextra -Wpedantic -Werror \
 LDFLAGS :=
 LDLIBS :=
 comma := ,
+SOURCE_DATE_EPOCH := 1787940000
+REPRO_FLAGS := -ffile-prefix-map=$(CURDIR)=. \
+	-fdebug-prefix-map=$(CURDIR)=. -fmacro-prefix-map=$(CURDIR)=.
 
 PROGRAM := build/sysgaze
 TEST_PROGRAM := build/tests/stage1_tests
@@ -32,10 +35,15 @@ FIXTURES := $(FIXTURE_SOURCES:tests/fixtures/%.c=build/tests/fixtures/%)
 PROGRAM_OBJECTS := $(PROGRAM_SOURCES:%.c=build/obj/%.o)
 TEST_OBJECTS := $(TEST_SOURCES:%.c=build/obj/%.test.o)
 
-.PHONY: all test check bench bench-compare bench-scaling bench-smoke \
-	update-syscalls clean
+.PHONY: all release test check bench bench-compare bench-scaling bench-smoke \
+	deps-proof repro-check demo update-syscalls clean
 
 all: $(PROGRAM)
+
+release:
+	$(MAKE) clean
+	SOURCE_DATE_EPOCH=$(SOURCE_DATE_EPOCH) LC_ALL=C $(MAKE) \
+		CPPFLAGS="$(CPPFLAGS) $(REPRO_FLAGS)" $(PROGRAM)
 
 $(PROGRAM): $(PROGRAM_OBJECTS)
 	@mkdir -p $(@D)
@@ -111,6 +119,25 @@ bench-scaling: $(PROGRAM) $(BENCH_HARNESS) $(BENCH_WORKLOAD)
 bench-smoke: $(PROGRAM) $(BENCH_HARNESS) $(BENCH_WORKLOAD)
 	SYSGAZE_BENCH_WARMUPS=1 SYSGAZE_BENCH_ITERATIONS=1 \
 		./$(BENCH_HARNESS) ./$(PROGRAM) ./$(BENCH_WORKLOAD) >/dev/null
+
+deps-proof: $(PROGRAM)
+	@set -eu; temporary=deps-proof.txt.tmp; \
+		trap 'rm -f "$$temporary"' EXIT HUP INT TERM; \
+		CC="$(CC)" ./tools/deps-proof.sh ./$(PROGRAM) >"$$temporary"; \
+		mv "$$temporary" deps-proof.txt; \
+		trap - EXIT HUP INT TERM
+	@cat deps-proof.txt
+
+repro-check:
+	@set -eu; temporary=reproducible-build.txt.tmp; \
+		trap 'rm -f "$$temporary"' EXIT HUP INT TERM; \
+		./tools/repro-check.sh >"$$temporary"; \
+		mv "$$temporary" reproducible-build.txt; \
+		trap - EXIT HUP INT TERM
+	@cat reproducible-build.txt
+
+demo:
+	./demo.sh
 
 update-syscalls:
 	./tools/update-syscall-names.sh

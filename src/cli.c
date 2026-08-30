@@ -11,7 +11,7 @@
 
 #define SG_DEFAULT_STRING_LIMIT 32U
 #define SG_MAX_STRING_LIMIT (1024U * 1024U)
-#define SG_VERSION "0.1.0-dev"
+#define SG_VERSION "1.0.0"
 
 enum {
     OPT_FORMAT = 1000,

@@ -1,0 +1,6 @@
+name = "Sysgaze"
+track = "A"
+language = "C23"
+pitch = "A zero-dependency Linux syscall tracer with safe decoding, structured output, summaries, and a seccomp-BPF fast path."
+build = "make"
+artifact = "build/sysgaze"

@@ -1,0 +1,71 @@
+Sysgaze zero-dependency proof
+==============================
+
+Artifact: build/sysgaze (ELF x86-64)
+Compiler: cc (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+Dependency manifest: absent (C has no runtime package manifest)
+Vendored dependency directories: none
+
+Representative compile command:
+cc -D_GNU_SOURCE -Iinclude -std=c23 -O2 -g -Wall -Wextra -Wpedantic -Werror -Wconversion -Wshadow -Wstrict-prototypes -Wmissing-prototypes -Wformat=2 -Wundef -Wwrite-strings -MMD -MP -c src/main.c -o build/obj/src/main.o
+
+Link command:
+cc  -o build/sysgaze build/obj/src/main.o build/obj/src/buffer.o build/obj/src/cli.o build/obj/src/decoder.o build/obj/src/filter.o build/obj/src/output.o build/obj/src/stats.o build/obj/src/syscall_catalog.o build/obj/src/tracee_table.o build/obj/src/trace.o 
+
+ELF DT_NEEDED entries:
+  libc.so.6
+
+Unique source includes (local project headers and platform headers):
+  #include "syscall_arities.inc"
+  #include "syscall_names.inc"
+  #include "sysgaze/buffer.h"
+  #include "sysgaze/cli.h"
+  #include "sysgaze/config.h"
+  #include "sysgaze/decoder.h"
+  #include "sysgaze/event.h"
+  #include "sysgaze/filter.h"
+  #include "sysgaze/output.h"
+  #include "sysgaze/stats.h"
+  #include "sysgaze/syscall_catalog.h"
+  #include "sysgaze/trace.h"
+  #include "sysgaze/tracee.h"
+  #include "sysgaze/tracee_table.h"
+  #include <arpa/inet.h>
+  #include <ctype.h>
+  #include <dirent.h>
+  #include <elf.h>
+  #include <errno.h>
+  #include <fcntl.h>
+  #include <getopt.h>
+  #include <inttypes.h>
+  #include <limits.h>
+  #include <linux/audit.h>
+  #include <linux/filter.h>
+  #include <linux/ptrace.h>
+  #include <linux/sched.h>
+  #include <linux/seccomp.h>
+  #include <netinet/in.h>
+  #include <signal.h>
+  #include <stdarg.h>
+  #include <stdbool.h>
+  #include <stddef.h>
+  #include <stdint.h>
+  #include <stdio.h>
+  #include <stdlib.h>
+  #include <string.h>
+  #include <sys/epoll.h>
+  #include <sys/mman.h>
+  #include <sys/prctl.h>
+  #include <sys/ptrace.h>
+  #include <sys/socket.h>
+  #include <sys/syscall.h>
+  #include <sys/types.h>
+  #include <sys/uio.h>
+  #include <sys/un.h>
+  #include <sys/utsname.h>
+  #include <sys/wait.h>
+  #include <time.h>
+  #include <unistd.h>
+
+Result: PASS — libc.so.6 is the only dynamic runtime dependency.
+Linux UAPI headers and syscalls are platform interfaces, not vendored code.
