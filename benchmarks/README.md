@@ -19,6 +19,12 @@ Sysgaze, and seccomp-filtered Sysgaze. `make bench-compare` adds matched strace
 modes. `make bench-scaling` runs process and thread workloads with 1, 2, 4, 8,
 and 16 workers.
 
+`make bench-smoke` uses one warmup and one measured sample to check event
+counts and seccomp ptrace-call reduction. It prints a compact comparison of
+seccomp-filtered Sysgaze and filtered strace when strace is installed. Its
+single-sample timings are indicative only; use `make bench-compare` for the
+full 30-sample measurement.
+
 `events` means completed selected syscall events for Sysgaze. For strace it is
 the number of syscall-entry records in the normalized text stream; strace may
 include non-returning syscalls such as `exit_group`, so unfiltered totals can

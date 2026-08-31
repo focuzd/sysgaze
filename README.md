@@ -165,7 +165,7 @@ correct. Unsupported setup is an explicit error; there is no silent fallback.
 ```sh
 make test          # unit, CLI, ptrace, signal, JSON, filter, and parity tests
 make check         # clean ASan/UBSan build and complete test suite
-make bench-smoke   # one-sample benchmark and ptrace-reduction gate
+make bench-smoke   # compact one-sample Sysgaze/strace comparison and gate
 ```
 
 The suite includes deterministic fixtures for decoding, unreadable memory,

@@ -118,8 +118,15 @@ bench-scaling: $(PROGRAM) $(BENCH_HARNESS) $(BENCH_WORKLOAD)
 		./$(BENCH_HARNESS) ./$(PROGRAM) ./$(BENCH_WORKLOAD)
 
 bench-smoke: $(PROGRAM) $(BENCH_HARNESS) $(BENCH_WORKLOAD)
-	SYSGAZE_BENCH_WARMUPS=1 SYSGAZE_BENCH_ITERATIONS=1 \
-		./$(BENCH_HARNESS) ./$(PROGRAM) ./$(BENCH_WORKLOAD) >/dev/null
+	@set -eu; strace_path="$$(command -v strace || true)"; \
+		if test -n "$$strace_path"; then \
+			SYSGAZE_BENCH_WARMUPS=1 SYSGAZE_BENCH_ITERATIONS=1 \
+				./$(BENCH_HARNESS) ./$(PROGRAM) ./$(BENCH_WORKLOAD) \
+				"$$strace_path"; \
+		else \
+			SYSGAZE_BENCH_WARMUPS=1 SYSGAZE_BENCH_ITERATIONS=1 \
+				./$(BENCH_HARNESS) ./$(PROGRAM) ./$(BENCH_WORKLOAD); \
+		fi | awk -f benchmarks/smoke_summary.awk
 
 deps-proof: $(PROGRAM)
 	@set -eu; temporary=deps-proof.txt.tmp; \
