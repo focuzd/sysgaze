@@ -72,15 +72,19 @@ would commonly introduce a package.
 
 13. **Benchmark framework → `fork`, `execve`, `wait4`, clocks, and rusage.**
     `benchmarks/harness.c` performs warmups, thirty-sample runs, median/min/max
-    calculations, CPU accounting, event checks, and ptrace-call telemetry. It
-    does not shell out to `/usr/bin/time`, Python, AWK, or strace for its own
-    measurements; system strace is accepted only as an optional comparison
-    subject.
+    calculations, CPU accounting, event checks, and ptrace-call telemetry
+    without a benchmarking package or `/usr/bin/time`. System strace is an
+    optional comparison subject, and AWK formats the compact `make bench-smoke`
+    report; neither participates in Sysgaze's own timing implementation.
 
 14. **Unit/integration test framework → small C and POSIX shell harnesses.**
     Assertions, JSON syntax validation, deterministic fixtures, exit-status
-    checks, signal tests, attach cleanup, and ptrace parity checks use only the
-    compiler, libc/POSIX, and the shell already required by Make.
+    checks, signal tests, attach cleanup, and ptrace parity checks use the C
+    compiler, libc/POSIX, the shell, and standard platform utilities such as
+    `grep`, `sed`, `mktemp`, and `awk`. `make check` additionally uses compiler-
+    supplied AddressSanitizer and UndefinedBehaviorSanitizer instrumentation;
+    sanitizer runtimes are linked only into test builds, never the release
+    artifact.
 
 15. **JSON test dependency → purpose-built C validator.**
     `tests/ndjson_validator.c` validates the exact JSON grammar needed by the
@@ -91,7 +95,9 @@ would commonly introduce a package.
     `make repro-check` fixes `SOURCE_DATE_EPOCH`, removes absolute source paths
     with GCC-compatible prefix maps, performs two clean builds, compares them
     in distinct source directories, compares them with `cmp`, and publishes
-    both `sha256sum` values.
+    both `sha256sum` values. Dependency proof additionally uses `readelf`,
+    `find`, `grep`, `sed`, and `sort`. These are development-time verification
+    commands and are not runtime requirements.
 
 ## External-code disclosure
 
@@ -101,6 +107,7 @@ installed Linux kernel headers by the project's own shell/AWK tools. The MIT
 license covers the project source; Linux header names and numeric ABI constants
 remain facts of the target platform.
 
-System `strace` is optional and used only by `make bench-compare` as an external
-benchmark subject. Sysgaze never executes strace in normal operation, tests,
-the default benchmark, or the shipped artifact.
+System `strace` is optional and used only as an external comparison subject by
+`make bench-smoke` when available and by `make bench-compare`. It is not needed
+to build, test, or run Sysgaze. Neither strace nor any shell/AWK/proof utility
+is linked into or executed by the shipped `build/sysgaze` artifact.
