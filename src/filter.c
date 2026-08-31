@@ -73,7 +73,12 @@ size_t sg_filter_count(const struct sg_filter *filter)
     size_t count = 0U;
 
     for (index = 0U; index < SG_FILTER_WORDS; ++index) {
-        count += (size_t)__builtin_popcountll(filter->words[index]);
+        uint64_t word = filter->words[index];
+
+        while (word != 0U) {
+            word &= word - 1U;
+            ++count;
+        }
     }
     return count;
 }

@@ -96,6 +96,7 @@ build/tests/fixtures/summary_fixture: tests/fixtures/summary_fixture.c
 
 test: $(TEST_PROGRAM) $(NDJSON_VALIDATOR) $(PROGRAM) $(FIXTURES)
 	./$(TEST_PROGRAM)
+	./tests/syscall_generator_test.sh
 	./tests/cli_integration.sh ./$(PROGRAM)
 	./tests/trace_integration.sh ./$(PROGRAM) build/tests/fixtures \
 		./$(NDJSON_VALIDATOR)

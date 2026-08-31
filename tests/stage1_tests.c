@@ -306,7 +306,33 @@ static bool test_filter_names_and_exclusions(void)
     CHECK(sg_filter_count(&filter) == SG_SYSCALL_LIMIT - 1U);
     CHECK(!sg_filter_contains(&filter, SYS_read));
     CHECK(sg_filter_contains(&filter, SYS_write));
-    CHECK(sg_filter_contains(&filter, 999L));
+    CHECK(sg_filter_contains(&filter, (long)SG_SYSCALL_LIMIT - 1L));
+    CHECK(!sg_filter_contains(&filter, (long)SG_SYSCALL_LIMIT));
+    return true;
+}
+
+static bool test_filter_count_and_boundaries(void)
+{
+    struct sg_filter filter;
+
+    sg_filter_clear(&filter);
+    CHECK(sg_filter_count(&filter) == 0U);
+    CHECK(!sg_filter_contains(&filter, -1L));
+    CHECK(!sg_filter_contains(&filter, (long)SG_SYSCALL_LIMIT));
+
+    filter.words[0] = UINT64_C(1);
+    CHECK(sg_filter_count(&filter) == 1U);
+    CHECK(sg_filter_contains(&filter, 0L));
+
+    filter.words[0] = UINT64_C(0xf00f);
+    filter.words[SG_FILTER_WORDS - 1U] = UINT64_C(1) << 63U;
+    CHECK(sg_filter_count(&filter) == 9U);
+    CHECK(sg_filter_contains(&filter, (long)SG_SYSCALL_LIMIT - 1L));
+
+    sg_filter_fill(&filter);
+    CHECK(sg_filter_count(&filter) == SG_SYSCALL_LIMIT);
+    CHECK(sg_filter_contains(&filter, 0L));
+    CHECK(sg_filter_contains(&filter, (long)SG_SYSCALL_LIMIT - 1L));
     return true;
 }
 
@@ -621,6 +647,7 @@ int main(void)
     run_test("buffer lifecycle", test_buffer_lifecycle);
     run_test("buffer overflow", test_buffer_overflow_is_non_destructive);
     run_test("filter names", test_filter_names_and_exclusions);
+    run_test("filter count and boundaries", test_filter_count_and_boundaries);
     run_test("filter classes", test_filter_classes_and_algebra);
     run_test("filter malformed input", test_filter_rejects_malformed_input);
     run_test("syscall catalog", test_catalog_is_well_formed);

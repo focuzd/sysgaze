@@ -5,9 +5,12 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define SG_SYSCALL_LIMIT 1024U
+#define SG_SYSCALL_LIMIT 512U
 #define SG_FILTER_WORD_BITS 64U
 #define SG_FILTER_WORDS (SG_SYSCALL_LIMIT / SG_FILTER_WORD_BITS)
+
+static_assert(SG_SYSCALL_LIMIT % SG_FILTER_WORD_BITS == 0U,
+              "syscall filter must contain whole words");
 
 enum sg_syscall_class {
     SG_CLASS_FILE = UINT32_C(1) << 0,
