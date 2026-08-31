@@ -36,7 +36,7 @@ PROGRAM_OBJECTS := $(PROGRAM_SOURCES:%.c=build/obj/%.o)
 TEST_OBJECTS := $(TEST_SOURCES:%.c=build/obj/%.test.o)
 
 .PHONY: all release test check bench bench-compare bench-scaling bench-smoke \
-	deps-proof repro-check demo update-syscalls clean
+	deps-proof repro-check update-syscalls clean
 
 all: $(PROGRAM)
 
@@ -136,9 +136,6 @@ repro-check:
 		mv "$$temporary" reproducible-build.txt; \
 		trap - EXIT HUP INT TERM
 	@cat reproducible-build.txt
-
-demo:
-	./demo.sh
 
 update-syscalls:
 	./tools/update-syscall-catalog.sh

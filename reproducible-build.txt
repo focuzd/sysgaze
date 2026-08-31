@@ -2,6 +2,6 @@ Sysgaze reproducible-build proof
 ================================
 SOURCE_DATE_EPOCH=1787940000
 Build roots: two distinct temporary source directories
-first  sha256: c24a44e062bafdadcc4836b66953df70c20d69ebcf0183a9ab76587a37e241d9
-second sha256: c24a44e062bafdadcc4836b66953df70c20d69ebcf0183a9ab76587a37e241d9
+first  sha256: 10d7aa6562e05039b6db7d712fdc0a7009704197f1386b5e6804843340cee435
+second sha256: 10d7aa6562e05039b6db7d712fdc0a7009704197f1386b5e6804843340cee435
 Result: PASS — the two clean release builds are byte-identical.

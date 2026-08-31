@@ -16,8 +16,7 @@ ELF DT_NEEDED entries:
   libc.so.6
 
 Unique source includes (local project headers and platform headers):
-  #include "syscall_arities.inc"
-  #include "syscall_names.inc"
+  #include "syscall_catalog.inc"
   #include "sysgaze/buffer.h"
   #include "sysgaze/cli.h"
   #include "sysgaze/config.h"

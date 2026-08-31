@@ -262,10 +262,6 @@ behavior testable rather than imitating flags without their semantics.
 All implementation code was written during the event window beginning
 2026-08-28 18:00 UTC.
 
-## Demo and license
-
-Run `make demo` for the scripted five-minute demonstration covering build,
-dependency proof, launch, attach, follow mode, filters, NDJSON, summary
-statistics, and seccomp performance.
+## License
 
 Sysgaze is available under the [MIT License](LICENSE).
