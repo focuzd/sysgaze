@@ -171,7 +171,9 @@ make bench-smoke   # one-sample benchmark and ptrace-reduction gate
 The suite includes deterministic fixtures for decoding, unreadable memory,
 syscall restarts, fatal and handled signals, stop/continue behavior, concurrent
 threads, fork/clone/exec, attach/detach, summaries, and ordinary-versus-seccomp
-event parity. Ptrace commands must run on a host that permits tracing.
+event parity. Catalog tests require every known native x86-64 syscall to have
+an exact 0–6 ABI arity and valid argument/result metadata. Ptrace commands must
+run on a host that permits tracing.
 
 ## Benchmarks
 
@@ -249,7 +251,9 @@ behavior testable rather than imitating flags without their semantics.
 - `src/trace.c`: launch/attach, ptrace state machine, signals, raw seccomp-BPF.
 - `src/decoder.c`: bounded tracee-memory reads and argument rendering.
 - `src/output.c`: text, NDJSON, and JSON summary serialization.
-- `src/filter.c`, `src/syscall_catalog.c`: filters and x86-64 metadata.
+- `src/filter.c`, `src/syscall_catalog.c`, `src/syscall_catalog.inc`: filters
+  and the single canonical x86-64 descriptor table containing each syscall's
+  number, name, ABI arity, classes, result kind, and argument kinds.
 - `src/tracee_table.c`: open-addressed per-TID state storage.
 - `src/stats.c`: checked aggregation and deterministic sorting.
 - `benchmarks/`: C harness, workloads, methodology, and recorded results.

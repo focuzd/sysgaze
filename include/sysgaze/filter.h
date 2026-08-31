@@ -18,12 +18,6 @@ enum sg_syscall_class {
     SG_CLASS_IPC = UINT32_C(1) << 5
 };
 
-struct sg_syscall_descriptor {
-    long number;
-    const char *name;
-    uint32_t classes;
-};
-
 struct sg_filter {
     uint64_t words[SG_FILTER_WORDS];
     bool active;

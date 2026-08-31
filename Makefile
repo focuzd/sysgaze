@@ -140,8 +140,7 @@ demo:
 	./demo.sh
 
 update-syscalls:
-	./tools/update-syscall-names.sh
-	./tools/update-syscall-arities.sh
+	./tools/update-syscall-catalog.sh
 
 clean:
 	rm -rf build

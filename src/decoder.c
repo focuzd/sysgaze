@@ -25,280 +25,11 @@
 
 #define SG_SOCK_TYPE_MASK UINT32_C(0x0f)
 
-enum argument_kind {
-    ARG_HEX,
-    ARG_S32,
-    ARG_U64,
-    ARG_SIZE,
-    ARG_FD,
-    ARG_DIRFD,
-    ARG_POINTER,
-    ARG_STRING,
-    ARG_STRING_OUT,
-    ARG_BUFFER_IN,
-    ARG_BUFFER_OUT,
-    ARG_ARGV,
-    ARG_MODE,
-    ARG_OPEN_FLAGS,
-    ARG_FD_FLAGS,
-    ARG_PROT_FLAGS,
-    ARG_MAP_FLAGS,
-    ARG_CLONE_FLAGS,
-    ARG_ACCESS_FLAGS,
-    ARG_AT_FLAGS,
-    ARG_SOCKET_DOMAIN,
-    ARG_SOCKET_TYPE,
-    ARG_SIGNAL,
-    ARG_SIGMASK_HOW,
-    ARG_SHUTDOWN_HOW,
-    ARG_FCNTL_COMMAND,
-    ARG_EPOLL_OPERATION,
-    ARG_WHENCE,
-    ARG_SOCKADDR_IN,
-    ARG_TIMESPEC_IN,
-    ARG_PIPE_OUT,
-    ARG_UTS_OUT
-};
-
-enum result_kind {
-    RESULT_INTEGER,
-    RESULT_POINTER
-};
-
-struct argument_spec {
-    enum argument_kind kind;
-    uint8_t auxiliary;
-};
-
-struct syscall_signature {
-    long number;
-    uint8_t argument_count;
-    enum result_kind result_kind;
-    struct argument_spec arguments[6];
-};
-
 struct flag_name {
     uint64_t value;
     const char *name;
 };
 
-#define ARG(kind_value) { (kind_value), 0U }
-#define ARG_AUX(kind_value, auxiliary_value) \
-    { (kind_value), (auxiliary_value) }
-#define SIG0(syscall_name) \
-    { SYS_##syscall_name, 0U, RESULT_INTEGER, {{0}} }
-#define SIG(syscall_name, result, count, ...) \
-    { SYS_##syscall_name, (count), (result), {__VA_ARGS__} }
-
-static const struct syscall_signature signatures[] = {
-    SIG(read, RESULT_INTEGER, 3U,
-        ARG(ARG_FD), ARG_AUX(ARG_BUFFER_OUT, 2U), ARG(ARG_SIZE)),
-    SIG(write, RESULT_INTEGER, 3U,
-        ARG(ARG_FD), ARG_AUX(ARG_BUFFER_IN, 2U), ARG(ARG_SIZE)),
-    SIG(open, RESULT_INTEGER, 3U,
-        ARG(ARG_STRING), ARG(ARG_OPEN_FLAGS), ARG(ARG_MODE)),
-    SIG(close, RESULT_INTEGER, 1U, ARG(ARG_FD)),
-    SIG(stat, RESULT_INTEGER, 2U, ARG(ARG_STRING), ARG(ARG_POINTER)),
-    SIG(fstat, RESULT_INTEGER, 2U, ARG(ARG_FD), ARG(ARG_POINTER)),
-    SIG(lstat, RESULT_INTEGER, 2U, ARG(ARG_STRING), ARG(ARG_POINTER)),
-    SIG(poll, RESULT_INTEGER, 3U,
-        ARG(ARG_POINTER), ARG(ARG_U64), ARG(ARG_S32)),
-    SIG(lseek, RESULT_INTEGER, 3U,
-        ARG(ARG_FD), ARG(ARG_U64), ARG(ARG_WHENCE)),
-    SIG(mmap, RESULT_POINTER, 6U,
-        ARG(ARG_POINTER), ARG(ARG_SIZE), ARG(ARG_PROT_FLAGS),
-        ARG(ARG_MAP_FLAGS), ARG(ARG_FD), ARG(ARG_U64)),
-    SIG(mprotect, RESULT_INTEGER, 3U,
-        ARG(ARG_POINTER), ARG(ARG_SIZE), ARG(ARG_PROT_FLAGS)),
-    SIG(munmap, RESULT_INTEGER, 2U, ARG(ARG_POINTER), ARG(ARG_SIZE)),
-    SIG(brk, RESULT_POINTER, 1U, ARG(ARG_POINTER)),
-    SIG(rt_sigaction, RESULT_INTEGER, 4U,
-        ARG(ARG_SIGNAL), ARG(ARG_POINTER), ARG(ARG_POINTER), ARG(ARG_SIZE)),
-    SIG(rt_sigprocmask, RESULT_INTEGER, 4U,
-        ARG(ARG_SIGMASK_HOW), ARG(ARG_POINTER), ARG(ARG_POINTER), ARG(ARG_SIZE)),
-    SIG0(rt_sigreturn),
-    SIG(ioctl, RESULT_INTEGER, 3U,
-        ARG(ARG_FD), ARG(ARG_HEX), ARG(ARG_POINTER)),
-    SIG(pread64, RESULT_INTEGER, 4U,
-        ARG(ARG_FD), ARG_AUX(ARG_BUFFER_OUT, 2U), ARG(ARG_SIZE), ARG(ARG_U64)),
-    SIG(pwrite64, RESULT_INTEGER, 4U,
-        ARG(ARG_FD), ARG_AUX(ARG_BUFFER_IN, 2U), ARG(ARG_SIZE), ARG(ARG_U64)),
-    SIG(readv, RESULT_INTEGER, 3U,
-        ARG(ARG_FD), ARG(ARG_POINTER), ARG(ARG_U64)),
-    SIG(writev, RESULT_INTEGER, 3U,
-        ARG(ARG_FD), ARG(ARG_POINTER), ARG(ARG_U64)),
-    SIG(access, RESULT_INTEGER, 2U, ARG(ARG_STRING), ARG(ARG_ACCESS_FLAGS)),
-    SIG(pipe, RESULT_INTEGER, 1U, ARG(ARG_PIPE_OUT)),
-    SIG(select, RESULT_INTEGER, 5U,
-        ARG(ARG_S32), ARG(ARG_POINTER), ARG(ARG_POINTER), ARG(ARG_POINTER),
-        ARG(ARG_POINTER)),
-    SIG0(sched_yield),
-    SIG(mremap, RESULT_POINTER, 5U,
-        ARG(ARG_POINTER), ARG(ARG_SIZE), ARG(ARG_SIZE), ARG(ARG_HEX),
-        ARG(ARG_POINTER)),
-    SIG(msync, RESULT_INTEGER, 3U,
-        ARG(ARG_POINTER), ARG(ARG_SIZE), ARG(ARG_HEX)),
-    SIG(mincore, RESULT_INTEGER, 3U,
-        ARG(ARG_POINTER), ARG(ARG_SIZE), ARG(ARG_POINTER)),
-    SIG(madvise, RESULT_INTEGER, 3U,
-        ARG(ARG_POINTER), ARG(ARG_SIZE), ARG(ARG_S32)),
-    SIG(dup, RESULT_INTEGER, 1U, ARG(ARG_FD)),
-    SIG(dup2, RESULT_INTEGER, 2U, ARG(ARG_FD), ARG(ARG_FD)),
-    SIG(nanosleep, RESULT_INTEGER, 2U,
-        ARG(ARG_TIMESPEC_IN), ARG(ARG_POINTER)),
-    SIG0(getpid),
-    SIG(sendfile, RESULT_INTEGER, 4U,
-        ARG(ARG_FD), ARG(ARG_FD), ARG(ARG_POINTER), ARG(ARG_SIZE)),
-    SIG(socket, RESULT_INTEGER, 3U,
-        ARG(ARG_SOCKET_DOMAIN), ARG(ARG_SOCKET_TYPE), ARG(ARG_S32)),
-    SIG(connect, RESULT_INTEGER, 3U,
-        ARG(ARG_FD), ARG_AUX(ARG_SOCKADDR_IN, 2U), ARG(ARG_SIZE)),
-    SIG(accept, RESULT_INTEGER, 3U,
-        ARG(ARG_FD), ARG(ARG_POINTER), ARG(ARG_POINTER)),
-    SIG(sendto, RESULT_INTEGER, 6U,
-        ARG(ARG_FD), ARG_AUX(ARG_BUFFER_IN, 2U), ARG(ARG_SIZE), ARG(ARG_HEX),
-        ARG_AUX(ARG_SOCKADDR_IN, 5U), ARG(ARG_SIZE)),
-    SIG(recvfrom, RESULT_INTEGER, 6U,
-        ARG(ARG_FD), ARG_AUX(ARG_BUFFER_OUT, 2U), ARG(ARG_SIZE), ARG(ARG_HEX),
-        ARG(ARG_POINTER), ARG(ARG_POINTER)),
-    SIG(sendmsg, RESULT_INTEGER, 3U,
-        ARG(ARG_FD), ARG(ARG_POINTER), ARG(ARG_HEX)),
-    SIG(recvmsg, RESULT_INTEGER, 3U,
-        ARG(ARG_FD), ARG(ARG_POINTER), ARG(ARG_HEX)),
-    SIG(shutdown, RESULT_INTEGER, 2U, ARG(ARG_FD), ARG(ARG_SHUTDOWN_HOW)),
-    SIG(bind, RESULT_INTEGER, 3U,
-        ARG(ARG_FD), ARG_AUX(ARG_SOCKADDR_IN, 2U), ARG(ARG_SIZE)),
-    SIG(listen, RESULT_INTEGER, 2U, ARG(ARG_FD), ARG(ARG_S32)),
-    SIG(getsockname, RESULT_INTEGER, 3U,
-        ARG(ARG_FD), ARG(ARG_POINTER), ARG(ARG_POINTER)),
-    SIG(getpeername, RESULT_INTEGER, 3U,
-        ARG(ARG_FD), ARG(ARG_POINTER), ARG(ARG_POINTER)),
-    SIG(socketpair, RESULT_INTEGER, 4U,
-        ARG(ARG_SOCKET_DOMAIN), ARG(ARG_SOCKET_TYPE), ARG(ARG_S32),
-        ARG(ARG_PIPE_OUT)),
-    SIG(setsockopt, RESULT_INTEGER, 5U,
-        ARG(ARG_FD), ARG(ARG_S32), ARG(ARG_S32), ARG(ARG_POINTER), ARG(ARG_SIZE)),
-    SIG(getsockopt, RESULT_INTEGER, 5U,
-        ARG(ARG_FD), ARG(ARG_S32), ARG(ARG_S32), ARG(ARG_POINTER), ARG(ARG_POINTER)),
-    SIG(clone, RESULT_INTEGER, 5U,
-        ARG(ARG_CLONE_FLAGS), ARG(ARG_POINTER), ARG(ARG_POINTER),
-        ARG(ARG_POINTER), ARG(ARG_HEX)),
-    SIG0(fork),
-    SIG0(vfork),
-    SIG(execve, RESULT_INTEGER, 3U,
-        ARG(ARG_STRING), ARG(ARG_ARGV), ARG(ARG_POINTER)),
-    SIG(exit, RESULT_INTEGER, 1U, ARG(ARG_S32)),
-    SIG(wait4, RESULT_INTEGER, 4U,
-        ARG(ARG_S32), ARG(ARG_POINTER), ARG(ARG_HEX), ARG(ARG_POINTER)),
-    SIG(kill, RESULT_INTEGER, 2U, ARG(ARG_S32), ARG(ARG_SIGNAL)),
-    SIG(uname, RESULT_INTEGER, 1U, ARG(ARG_UTS_OUT)),
-    SIG(fcntl, RESULT_INTEGER, 3U,
-        ARG(ARG_FD), ARG(ARG_FCNTL_COMMAND), ARG(ARG_HEX)),
-    SIG(fsync, RESULT_INTEGER, 1U, ARG(ARG_FD)),
-    SIG(fdatasync, RESULT_INTEGER, 1U, ARG(ARG_FD)),
-    SIG(truncate, RESULT_INTEGER, 2U, ARG(ARG_STRING), ARG(ARG_U64)),
-    SIG(ftruncate, RESULT_INTEGER, 2U, ARG(ARG_FD), ARG(ARG_U64)),
-    SIG(getdents, RESULT_INTEGER, 3U,
-        ARG(ARG_FD), ARG(ARG_POINTER), ARG(ARG_SIZE)),
-    SIG(getcwd, RESULT_INTEGER, 2U,
-        ARG_AUX(ARG_STRING_OUT, 1U), ARG(ARG_SIZE)),
-    SIG(chdir, RESULT_INTEGER, 1U, ARG(ARG_STRING)),
-    SIG(rename, RESULT_INTEGER, 2U, ARG(ARG_STRING), ARG(ARG_STRING)),
-    SIG(mkdir, RESULT_INTEGER, 2U, ARG(ARG_STRING), ARG(ARG_MODE)),
-    SIG(rmdir, RESULT_INTEGER, 1U, ARG(ARG_STRING)),
-    SIG(creat, RESULT_INTEGER, 2U, ARG(ARG_STRING), ARG(ARG_MODE)),
-    SIG(link, RESULT_INTEGER, 2U, ARG(ARG_STRING), ARG(ARG_STRING)),
-    SIG(unlink, RESULT_INTEGER, 1U, ARG(ARG_STRING)),
-    SIG(symlink, RESULT_INTEGER, 2U, ARG(ARG_STRING), ARG(ARG_STRING)),
-    SIG(readlink, RESULT_INTEGER, 3U,
-        ARG(ARG_STRING), ARG_AUX(ARG_BUFFER_OUT, 2U), ARG(ARG_SIZE)),
-    SIG(chmod, RESULT_INTEGER, 2U, ARG(ARG_STRING), ARG(ARG_MODE)),
-    SIG(fchmod, RESULT_INTEGER, 2U, ARG(ARG_FD), ARG(ARG_MODE)),
-    SIG(chown, RESULT_INTEGER, 3U,
-        ARG(ARG_STRING), ARG(ARG_U64), ARG(ARG_U64)),
-    SIG(fchown, RESULT_INTEGER, 3U,
-        ARG(ARG_FD), ARG(ARG_U64), ARG(ARG_U64)),
-    SIG0(getuid),
-    SIG0(getgid),
-    SIG0(geteuid),
-    SIG0(getegid),
-    SIG0(getppid),
-    SIG0(setsid),
-    SIG(sigaltstack, RESULT_INTEGER, 2U, ARG(ARG_POINTER), ARG(ARG_POINTER)),
-    SIG(arch_prctl, RESULT_INTEGER, 2U, ARG(ARG_S32), ARG(ARG_POINTER)),
-    SIG(futex, RESULT_INTEGER, 6U,
-        ARG(ARG_POINTER), ARG(ARG_S32), ARG(ARG_U64), ARG(ARG_POINTER),
-        ARG(ARG_POINTER), ARG(ARG_U64)),
-    SIG(exit_group, RESULT_INTEGER, 1U, ARG(ARG_S32)),
-    SIG(epoll_wait, RESULT_INTEGER, 4U,
-        ARG(ARG_FD), ARG(ARG_POINTER), ARG(ARG_S32), ARG(ARG_S32)),
-    SIG(epoll_ctl, RESULT_INTEGER, 4U,
-        ARG(ARG_FD), ARG(ARG_EPOLL_OPERATION), ARG(ARG_FD), ARG(ARG_POINTER)),
-    SIG(openat, RESULT_INTEGER, 4U,
-        ARG(ARG_DIRFD), ARG(ARG_STRING), ARG(ARG_OPEN_FLAGS), ARG(ARG_MODE)),
-    SIG(newfstatat, RESULT_INTEGER, 4U,
-        ARG(ARG_DIRFD), ARG(ARG_STRING), ARG(ARG_POINTER), ARG(ARG_AT_FLAGS)),
-    SIG(unlinkat, RESULT_INTEGER, 3U,
-        ARG(ARG_DIRFD), ARG(ARG_STRING), ARG(ARG_AT_FLAGS)),
-    SIG(renameat, RESULT_INTEGER, 4U,
-        ARG(ARG_DIRFD), ARG(ARG_STRING), ARG(ARG_DIRFD), ARG(ARG_STRING)),
-    SIG(linkat, RESULT_INTEGER, 5U,
-        ARG(ARG_DIRFD), ARG(ARG_STRING), ARG(ARG_DIRFD), ARG(ARG_STRING),
-        ARG(ARG_AT_FLAGS)),
-    SIG(symlinkat, RESULT_INTEGER, 3U,
-        ARG(ARG_STRING), ARG(ARG_DIRFD), ARG(ARG_STRING)),
-    SIG(readlinkat, RESULT_INTEGER, 4U,
-        ARG(ARG_DIRFD), ARG(ARG_STRING), ARG_AUX(ARG_BUFFER_OUT, 3U),
-        ARG(ARG_SIZE)),
-    SIG(pselect6, RESULT_INTEGER, 6U,
-        ARG(ARG_S32), ARG(ARG_POINTER), ARG(ARG_POINTER), ARG(ARG_POINTER),
-        ARG(ARG_POINTER), ARG(ARG_POINTER)),
-    SIG(ppoll, RESULT_INTEGER, 5U,
-        ARG(ARG_POINTER), ARG(ARG_U64), ARG(ARG_POINTER), ARG(ARG_POINTER),
-        ARG(ARG_SIZE)),
-    SIG(unshare, RESULT_INTEGER, 1U, ARG(ARG_CLONE_FLAGS)),
-    SIG(splice, RESULT_INTEGER, 6U,
-        ARG(ARG_FD), ARG(ARG_POINTER), ARG(ARG_FD), ARG(ARG_POINTER),
-        ARG(ARG_SIZE), ARG(ARG_HEX)),
-    SIG(tee, RESULT_INTEGER, 4U,
-        ARG(ARG_FD), ARG(ARG_FD), ARG(ARG_SIZE), ARG(ARG_HEX)),
-    SIG(vmsplice, RESULT_INTEGER, 4U,
-        ARG(ARG_FD), ARG(ARG_POINTER), ARG(ARG_U64), ARG(ARG_HEX)),
-    SIG(accept4, RESULT_INTEGER, 4U,
-        ARG(ARG_FD), ARG(ARG_POINTER), ARG(ARG_POINTER), ARG(ARG_SOCKET_TYPE)),
-    SIG(dup3, RESULT_INTEGER, 3U,
-        ARG(ARG_FD), ARG(ARG_FD), ARG(ARG_FD_FLAGS)),
-    SIG(pipe2, RESULT_INTEGER, 2U, ARG(ARG_PIPE_OUT), ARG(ARG_FD_FLAGS)),
-    SIG(preadv, RESULT_INTEGER, 5U,
-        ARG(ARG_FD), ARG(ARG_POINTER), ARG(ARG_U64), ARG(ARG_U64), ARG(ARG_U64)),
-    SIG(pwritev, RESULT_INTEGER, 5U,
-        ARG(ARG_FD), ARG(ARG_POINTER), ARG(ARG_U64), ARG(ARG_U64), ARG(ARG_U64)),
-    SIG(process_vm_readv, RESULT_INTEGER, 6U,
-        ARG(ARG_S32), ARG(ARG_POINTER), ARG(ARG_U64), ARG(ARG_POINTER),
-        ARG(ARG_U64), ARG(ARG_HEX)),
-    SIG(process_vm_writev, RESULT_INTEGER, 6U,
-        ARG(ARG_S32), ARG(ARG_POINTER), ARG(ARG_U64), ARG(ARG_POINTER),
-        ARG(ARG_U64), ARG(ARG_HEX)),
-    SIG(execveat, RESULT_INTEGER, 5U,
-        ARG(ARG_DIRFD), ARG(ARG_STRING), ARG(ARG_ARGV), ARG(ARG_POINTER),
-        ARG(ARG_AT_FLAGS)),
-    SIG(preadv2, RESULT_INTEGER, 6U,
-        ARG(ARG_FD), ARG(ARG_POINTER), ARG(ARG_U64), ARG(ARG_U64), ARG(ARG_U64),
-        ARG(ARG_HEX)),
-    SIG(pwritev2, RESULT_INTEGER, 6U,
-        ARG(ARG_FD), ARG(ARG_POINTER), ARG(ARG_U64), ARG(ARG_U64), ARG(ARG_U64),
-        ARG(ARG_HEX)),
-    SIG(clone3, RESULT_INTEGER, 2U, ARG(ARG_POINTER), ARG(ARG_SIZE)),
-    SIG(close_range, RESULT_INTEGER, 3U,
-        ARG(ARG_U64), ARG(ARG_U64), ARG(ARG_HEX)),
-    SIG(openat2, RESULT_INTEGER, 4U,
-        ARG(ARG_DIRFD), ARG(ARG_STRING), ARG(ARG_POINTER), ARG(ARG_SIZE)),
-    SIG(getrandom, RESULT_INTEGER, 3U,
-        ARG_AUX(ARG_BUFFER_OUT, 1U), ARG(ARG_SIZE), ARG(ARG_HEX)),
-    SIG(statx, RESULT_INTEGER, 5U,
-        ARG(ARG_DIRFD), ARG(ARG_STRING), ARG(ARG_AT_FLAGS), ARG(ARG_HEX),
-        ARG(ARG_POINTER))
-};
 
 static const struct flag_name open_flag_names[] = {
     {O_CREAT, "O_CREAT"}, {O_EXCL, "O_EXCL"}, {O_NOCTTY, "O_NOCTTY"},
@@ -350,21 +81,8 @@ static const struct flag_name clone_flag_names[] = {
     {CLONE_IO, "CLONE_IO"}
 };
 
-static const struct syscall_signature *find_signature(long number)
-{
-    size_t index;
-
-    for (index = 0U; index < sizeof(signatures) / sizeof(signatures[0]);
-         ++index) {
-        if (signatures[index].number == number) {
-            return &signatures[index];
-        }
-    }
-    return NULL;
-}
-
 static uint8_t effective_argument_count(
-    const struct syscall_signature *signature,
+    const struct sg_syscall_descriptor *descriptor,
     const struct sg_syscall_event *event)
 {
     uint64_t flags;
@@ -378,13 +96,13 @@ static uint8_t effective_argument_count(
 
         return command == F_GETFD || command == F_GETFL
                    ? 2U
-                   : signature->argument_count;
+                   : descriptor->arity;
     } else {
-        return signature->argument_count;
+        return descriptor->arity;
     }
     return (flags & ((uint64_t)O_CREAT | (uint64_t)O_TMPFILE)) != 0U
-               ? signature->argument_count
-               : (uint8_t)(signature->argument_count - 1U);
+               ? descriptor->arity
+               : (uint8_t)(descriptor->arity - 1U);
 }
 
 static bool append_pointer(struct sg_buffer *output, uint64_t value)
@@ -845,7 +563,7 @@ static bool append_uts(const struct sg_decoder *decoder, pid_t tid,
                                    (int)sizeof(value.machine), value.machine);
 }
 
-static bool is_output_argument(enum argument_kind kind)
+static bool is_output_argument(enum sg_argument_kind kind)
 {
     return kind == ARG_STRING_OUT || kind == ARG_BUFFER_OUT ||
            kind == ARG_PIPE_OUT || kind == ARG_UTS_OUT;
@@ -853,7 +571,7 @@ static bool is_output_argument(enum argument_kind kind)
 
 static bool render_argument(const struct sg_decoder *decoder, pid_t tid,
                             const struct sg_syscall_event *event,
-                            const struct argument_spec *spec, size_t index,
+                            const struct sg_argument_spec *spec, size_t index,
                             struct sg_buffer *output)
 {
     uint64_t value = event->arguments[index];
@@ -1003,6 +721,8 @@ static bool render_argument(const struct sg_decoder *decoder, pid_t tid,
         return append_pipe(decoder, tid, event, value, output);
     case ARG_UTS_OUT:
         return append_uts(decoder, tid, event, value, output);
+    case SG_ARGUMENT_KIND_COUNT:
+        return false;
     }
     return false;
 }
@@ -1010,24 +730,25 @@ static bool render_argument(const struct sg_decoder *decoder, pid_t tid,
 bool sg_decoder_capture_entry(const struct sg_decoder *decoder, pid_t tid,
                               struct sg_syscall_event *event)
 {
-    const struct syscall_signature *signature = find_signature(event->number);
+    const struct sg_syscall_descriptor *descriptor =
+        sg_syscall_by_number(event->number);
     size_t index;
 
-    if (signature == NULL) {
+    if (descriptor == NULL) {
         event->argument_count =
             (uint8_t)sg_syscall_argument_count(event->number);
         return true;
     }
-    event->argument_count = effective_argument_count(signature, event);
+    event->argument_count = effective_argument_count(descriptor, event);
     for (index = 0U; index < event->argument_count; ++index) {
         struct sg_buffer rendered;
         char *saved;
 
-        if (is_output_argument(signature->arguments[index].kind)) {
+        if (is_output_argument(descriptor->arguments[index].kind)) {
             continue;
         }
         sg_buffer_init(&rendered);
-        if (!render_argument(decoder, tid, event, &signature->arguments[index],
+        if (!render_argument(decoder, tid, event, &descriptor->arguments[index],
                              index, &rendered)) {
             sg_buffer_destroy(&rendered);
             sg_decoder_release_event(event);
@@ -1056,7 +777,7 @@ void sg_decoder_release_event(struct sg_syscall_event *event)
     }
 }
 
-static bool append_result(const struct syscall_signature *signature,
+static bool append_result(const struct sg_syscall_descriptor *descriptor,
                           const struct sg_syscall_event *event,
                           struct sg_buffer *output)
 {
@@ -1071,7 +792,7 @@ static bool append_result(const struct syscall_signature *signature,
         return sg_buffer_append_format(output, " = -1 %s (%s)", name,
                                        description);
     }
-    if (signature != NULL && signature->result_kind == RESULT_POINTER) {
+    if (descriptor != NULL && descriptor->result_kind == RESULT_POINTER) {
         return sg_buffer_append_format(output, " = 0x%" PRIx64,
                                        (uint64_t)event->result);
     }
@@ -1082,12 +803,11 @@ bool sg_decode_syscall_entry(const struct sg_decoder *decoder, pid_t tid,
                              const struct sg_syscall_event *event,
                              struct sg_buffer *output)
 {
-    const struct syscall_signature *signature = find_signature(event->number);
     const struct sg_syscall_descriptor *descriptor =
         sg_syscall_by_number(event->number);
-    uint8_t argument_count = signature == NULL
+    uint8_t argument_count = descriptor == NULL
                                  ? event->argument_count
-                                 : effective_argument_count(signature, event);
+                                 : effective_argument_count(descriptor, event);
     size_t index;
 
     if (descriptor == NULL) {
@@ -1105,9 +825,9 @@ bool sg_decode_syscall_entry(const struct sg_decoder *decoder, pid_t tid,
             if (!sg_buffer_append_cstr(output, event->decoded_arguments[index])) {
                 return false;
             }
-        } else if (signature != NULL) {
+        } else if (descriptor != NULL) {
             if (!render_argument(decoder, tid, event,
-                                 &signature->arguments[index], index, output)) {
+                                 &descriptor->arguments[index], index, output)) {
                 return false;
             }
         } else if (!sg_buffer_append_format(output, "0x%" PRIx64,
@@ -1121,7 +841,7 @@ bool sg_decode_syscall_entry(const struct sg_decoder *decoder, pid_t tid,
 bool sg_decode_syscall_result(const struct sg_syscall_event *event,
                               struct sg_buffer *output)
 {
-    return append_result(find_signature(event->number), event, output);
+    return append_result(sg_syscall_by_number(event->number), event, output);
 }
 
 bool sg_decode_syscall(const struct sg_decoder *decoder, pid_t tid,

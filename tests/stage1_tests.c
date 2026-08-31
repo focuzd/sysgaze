@@ -360,13 +360,26 @@ static bool test_catalog_is_well_formed(void)
 
     catalog = sg_syscall_catalog(&count);
     CHECK(catalog != NULL);
-    CHECK(count > 50U);
+    CHECK(count == sg_syscall_name_count());
     for (left = 0U; left < count; ++left) {
+        size_t argument;
+
         CHECK(catalog[left].number >= 0);
         CHECK((unsigned long)catalog[left].number < SG_SYSCALL_LIMIT);
         CHECK(catalog[left].name != NULL);
         CHECK(catalog[left].name[0] != '\0');
-        CHECK(catalog[left].classes != 0U);
+        CHECK(catalog[left].arity <= 6U);
+        CHECK(catalog[left].result_kind < SG_RESULT_KIND_COUNT);
+        CHECK(sg_syscall_argument_count(catalog[left].number) ==
+              catalog[left].arity);
+        for (argument = 0U; argument < 6U; ++argument) {
+            CHECK(catalog[left].arguments[argument].kind <
+                  SG_ARGUMENT_KIND_COUNT);
+            CHECK(catalog[left].arguments[argument].auxiliary < 6U);
+        }
+        if (left != 0U) {
+            CHECK(catalog[left - 1U].number < catalog[left].number);
+        }
         for (right = left + 1U; right < count; ++right) {
             CHECK(catalog[left].number != catalog[right].number);
             CHECK(strcmp(catalog[left].name, catalog[right].name) != 0);
